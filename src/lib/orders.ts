@@ -1,4 +1,5 @@
-import { all, db, get, now, run } from "./db";
+import "server-only";
+import { supabaseServer } from "./supabase/server";
 import { ERRORS, badRequest, conflict, forbidden, notFound } from "./errors";
 import { notify, type NotificationEvent } from "./notifications";
 import {
@@ -14,7 +15,14 @@ import {
 
 // --- State machine (SRS section 9) ------------------------------------------
 
-/** Allowed forward transitions. Orders may also be cancelled before collection. */
+/**
+ * Allowed forward transitions. Orders may also be cancelled before collection.
+ *
+ * This table shapes the UI - which buttons a screen offers. The copy that
+ * actually holds is `allowed_transition()` in supabase/schema.sql, because the
+ * anon key ships to the browser and "the app already checked" is not a check.
+ * Change one and change the other.
+ */
 const TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   PENDING: ["PICKUP_ASSIGNED", "CANCELLED"],
   PICKUP_ASSIGNED: ["PICKED_UP", "PENDING", "CANCELLED"],
@@ -53,58 +61,82 @@ const EVENT_FOR_STATUS: Partial<Record<OrderStatus, NotificationEvent>> = {
   CANCELLED: "CANCELLED",
 };
 
-// Timestamp columns stamped when an order reaches a given status.
-const TIMESTAMP_COLUMN: Partial<Record<OrderStatus, string>> = {
-  PICKED_UP: "picked_up_at",
-  AT_LAUNDRY: "received_at",
-  READY: "ready_at",
-  DELIVERED: "delivered_at",
-  CANCELLED: "cancelled_at",
-};
-
-// --- Order numbers (BR-002) --------------------------------------------------
-
-/**
- * Generates the next order number, e.g. PU-2026-0001. Callers run this inside
- * the same transaction as the insert, so numbers stay unique and gap-free.
- */
-function nextOrderNumber(): string {
-  const year = new Date().getFullYear();
-  run("INSERT INTO order_counters (year, last) VALUES (?, 0) ON CONFLICT(year) DO NOTHING", year);
-  run("UPDATE order_counters SET last = last + 1 WHERE year = ?", year);
-  const row = get<{ last: number }>("SELECT last FROM order_counters WHERE year = ?", year);
-  return "PU-" + year + "-" + String(row?.last ?? 1).padStart(4, "0");
+/** Maps a raise from a schema.sql function onto the app's error envelope. */
+function fromRpc(message: string): Error {
+  if (message.includes("FORBIDDEN")) return forbidden();
+  if (message.includes("NOT_SIGNED_IN")) return forbidden();
+  if (message.includes("NOT_FOUND")) return notFound();
+  if (message.includes("BAD_TRANSITION")) return conflict(ERRORS.invalidTransition);
+  if (message.includes("ALREADY_DONE")) return conflict("This order is already completed.");
+  if (message.includes("BAD_ADDRESS")) return badRequest(ERRORS.invalidAddress);
+  if (message.includes("BAD_BAG_COUNT")) return badRequest("Please enter at least one laundry bag.");
+  if (message.includes("BAD_PRICE")) return badRequest("Please enter a valid price.");
+  if (message.includes("AGENT_UNAVAILABLE")) return badRequest(ERRORS.agentUnavailable);
+  return new Error(message);
 }
 
 // --- Queries -----------------------------------------------------------------
 
+/**
+ * Everything the order screens show, in one round trip. The two agent columns
+ * both point at `users`, so each embed names its foreign key explicitly.
+ */
 const ORDER_SELECT = `
-  SELECT o.*,
-         c.name  AS customer_name,
-         c.phone AS customer_phone,
-         pa.name  AS pickup_agent_name,
-         pa.phone AS pickup_agent_phone,
-         da.name  AS delivery_agent_name,
-         s.name   AS shop_name,
-         a.label    AS address_label,
-         a.address  AS address_line,
-         a.area     AS address_area,
-         a.landmark AS address_landmark,
-         a.phone    AS address_phone
-  FROM laundry_orders o
-  JOIN users c     ON c.id = o.customer_id
-  JOIN addresses a ON a.id = o.pickup_address_id
-  LEFT JOIN users pa        ON pa.id = o.pickup_agent_id
-  LEFT JOIN users da        ON da.id = o.delivery_agent_id
-  LEFT JOIN laundry_shops s ON s.id = o.laundry_shop_id
+  *,
+  customer:users!laundry_orders_customer_id_fkey ( name, phone ),
+  pickup_agent:users!laundry_orders_pickup_agent_id_fkey ( name, phone ),
+  delivery_agent:users!laundry_orders_delivery_agent_id_fkey ( name ),
+  shop:laundry_shops!laundry_orders_laundry_shop_id_fkey ( name ),
+  address:addresses!laundry_orders_pickup_address_id_fkey ( label, address, area, landmark, phone )
 `;
 
-export function getOrder(id: number): OrderWithDetails | undefined {
-  return get<OrderWithDetails>(ORDER_SELECT + " WHERE o.id = ?", id);
+type OrderRow = LaundryOrder & {
+  customer: { name: string; phone: string } | null;
+  pickup_agent: { name: string; phone: string } | null;
+  delivery_agent: { name: string } | null;
+  shop: { name: string } | null;
+  address: {
+    label: string;
+    address: string;
+    area: string | null;
+    landmark: string | null;
+    phone: string | null;
+  } | null;
+};
+
+/** Flattens the embeds back into the shape every screen already expects. */
+function withDetails(row: OrderRow): OrderWithDetails {
+  const { customer, pickup_agent, delivery_agent, shop, address, ...order } = row;
+  return {
+    ...order,
+    customer_name: customer?.name ?? "",
+    customer_phone: customer?.phone ?? "",
+    pickup_agent_name: pickup_agent?.name ?? null,
+    pickup_agent_phone: pickup_agent?.phone ?? null,
+    delivery_agent_name: delivery_agent?.name ?? null,
+    shop_name: shop?.name ?? null,
+    address_label: address?.label ?? "",
+    address_line: address?.address ?? "",
+    address_area: address?.area ?? null,
+    address_landmark: address?.landmark ?? null,
+    address_phone: address?.phone ?? null,
+  };
 }
 
-export function getOrderByNumber(orderNumber: string): OrderWithDetails | undefined {
-  return get<OrderWithDetails>(ORDER_SELECT + " WHERE o.order_number = ?", orderNumber);
+export async function getOrder(id: number): Promise<OrderWithDetails | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase.from("laundry_orders").select(ORDER_SELECT).eq("id", id).maybeSingle();
+  return data ? withDetails(data as unknown as OrderRow) : undefined;
+}
+
+export async function getOrderByNumber(orderNumber: string): Promise<OrderWithDetails | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase
+    .from("laundry_orders")
+    .select(ORDER_SELECT)
+    .eq("order_number", orderNumber)
+    .maybeSingle();
+  return data ? withDetails(data as unknown as OrderRow) : undefined;
 }
 
 export interface OrderFilter {
@@ -119,66 +151,68 @@ export interface OrderFilter {
   limit?: number;
 }
 
-export function listOrders(filter: OrderFilter = {}): OrderWithDetails[] {
-  const where: string[] = [];
-  const params: unknown[] = [];
+export async function listOrders(filter: OrderFilter = {}): Promise<OrderWithDetails[]> {
+  const supabase = await supabaseServer();
+  let query = supabase.from("laundry_orders").select(ORDER_SELECT);
 
-  if (filter.customerId) {
-    where.push("o.customer_id = ?");
-    params.push(filter.customerId);
-  }
-  if (filter.pickupAgentId) {
-    where.push("o.pickup_agent_id = ?");
-    params.push(filter.pickupAgentId);
-  }
-  if (filter.deliveryAgentId) {
-    where.push("o.delivery_agent_id = ?");
-    params.push(filter.deliveryAgentId);
-  }
+  if (filter.customerId) query = query.eq("customer_id", filter.customerId);
+  if (filter.pickupAgentId) query = query.eq("pickup_agent_id", filter.pickupAgentId);
+  if (filter.deliveryAgentId) query = query.eq("delivery_agent_id", filter.deliveryAgentId);
   if (filter.agentId) {
-    where.push("(o.pickup_agent_id = ? OR o.delivery_agent_id = ?)");
-    params.push(filter.agentId, filter.agentId);
+    query = query.or(`pickup_agent_id.eq.${filter.agentId},delivery_agent_id.eq.${filter.agentId}`);
   }
   if (filter.shopId) {
-    where.push("(o.laundry_shop_id = ? OR o.laundry_shop_id IS NULL)");
-    params.push(filter.shopId);
+    query = query.or(`laundry_shop_id.eq.${filter.shopId},laundry_shop_id.is.null`);
   }
-  if (filter.statuses?.length) {
-    where.push("o.status IN (" + filter.statuses.map(() => "?").join(",") + ")");
-    params.push(...filter.statuses);
-  }
-  if (filter.pickupDate) {
-    where.push("o.pickup_date = ?");
-    params.push(filter.pickupDate);
-  }
-  if (filter.search) {
-    where.push("(o.order_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)");
-    const like = "%" + filter.search + "%";
-    params.push(like, like, like);
-  }
+  if (filter.statuses?.length) query = query.in("status", filter.statuses);
+  if (filter.pickupDate) query = query.eq("pickup_date", filter.pickupDate);
+  const { data, error } = await query
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(filter.limit ?? 200);
+  if (error) throw error;
 
-  const clause = where.length ? " WHERE " + where.join(" AND ") : "";
-  const limit = filter.limit ?? 200;
-  return all<OrderWithDetails>(
-    ORDER_SELECT + clause + " ORDER BY o.created_at DESC, o.id DESC LIMIT ?",
-    ...params,
-    limit,
+  const rows = ((data ?? []) as unknown as OrderRow[]).map(withDetails);
+  if (!filter.search) return rows;
+
+  /*
+   * The search runs over the order number and the customer's name and phone.
+   * Two of those live on an embed, and filtering an embedded column in
+   * PostgREST turns the join inner - which would drop every order with no
+   * agent assigned. So the match happens here, over the already-filtered set.
+   */
+  const needle = filter.search.toLowerCase();
+  return rows.filter(
+    (o) =>
+      o.order_number.toLowerCase().includes(needle) ||
+      o.customer_name.toLowerCase().includes(needle) ||
+      o.customer_phone.toLowerCase().includes(needle),
   );
 }
 
-export function getStatusHistory(orderId: number): StatusHistoryEntry[] {
-  return all<StatusHistoryEntry>(
-    `SELECT h.*, u.name AS changed_by_name
-     FROM order_status_history h
-     LEFT JOIN users u ON u.id = h.changed_by
-     WHERE h.order_id = ?
-     ORDER BY h.created_at ASC, h.id ASC`,
-    orderId,
-  );
+export async function getStatusHistory(orderId: number): Promise<StatusHistoryEntry[]> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("order_status_history")
+    .select(`*, changed_by_user:users!order_status_history_changed_by_fkey ( name )`)
+    .eq("order_id", orderId)
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true });
+  if (error) throw error;
+
+  type Row = StatusHistoryEntry & { changed_by_user: { name: string } | null };
+  return ((data ?? []) as unknown as Row[]).map(({ changed_by_user, ...entry }) => ({
+    ...entry,
+    changed_by_name: changed_by_user?.name ?? null,
+  }));
 }
 
 // --- Access control (BR-004, BR-008, SRS section 12) -------------------------
 
+/**
+ * The same rule as `can_view_order()` in supabase/schema.sql. This one shapes
+ * the UI and gives a clean 403; that one is the lock.
+ */
 export function canViewOrder(user: SessionUser, order: LaundryOrder): boolean {
   switch (user.role) {
     case "ADMIN":
@@ -231,55 +265,35 @@ export interface CreateOrderInput {
 }
 
 /** FR-005 / FR-006: creates a PENDING order and records the first history row. */
-export function createOrder(input: CreateOrderInput, actorId: number): OrderWithDetails {
-  // BR-001: the pickup address must exist and belong to the customer.
-  const address = get<{ id: number }>(
-    "SELECT id FROM addresses WHERE id = ? AND user_id = ? AND is_deleted = 0",
-    input.addressId,
-    input.customerId,
-  );
-  if (!address) throw badRequest(ERRORS.invalidAddress);
+export async function createOrder(
+  input: CreateOrderInput,
+  actorId: number,
+): Promise<OrderWithDetails> {
+  void actorId; // the function reads the caller from the session, not the argument
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.pickupDate)) throw badRequest(ERRORS.invalidPickupDate);
-  const todayStr = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  const todayStr = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 10);
   if (!input.allowPastDate && input.pickupDate < todayStr) throw badRequest(ERRORS.invalidPickupDate);
   if (!Number.isInteger(input.bagCount) || input.bagCount < 1) {
     throw badRequest("Please enter at least one laundry bag.");
   }
 
-  // For the MVP a single active shop receives every order (FR-026).
-  const shop = get<{ id: number }>("SELECT id FROM laundry_shops WHERE is_active = 1 ORDER BY id LIMIT 1");
-
-  const insert = db.transaction(() => {
-    const orderNumber = nextOrderNumber();
-    const result = run(
-      `INSERT INTO laundry_orders
-        (order_number, customer_id, laundry_shop_id, status, pickup_address_id,
-         pickup_date, pickup_time_slot, bag_count, item_count, notes)
-       VALUES (?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?)`,
-      orderNumber,
-      input.customerId,
-      shop?.id ?? null,
-      input.addressId,
-      input.pickupDate,
-      input.pickupTimeSlot,
-      input.bagCount,
-      input.itemCount ?? null,
-      input.notes ?? null,
-    );
-    const id = Number(result.lastInsertRowid);
-    // BR-007: every status change is recorded, including the initial one.
-    run(
-      "INSERT INTO order_status_history (order_id, status, changed_by, notes) VALUES (?, 'PENDING', ?, ?)",
-      id,
-      actorId,
-      "Pickup requested",
-    );
-    return id;
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase.rpc("create_order", {
+    p_address_id: input.addressId,
+    p_pickup_date: input.pickupDate,
+    p_pickup_time_slot: input.pickupTimeSlot,
+    p_bag_count: input.bagCount,
+    p_item_count: input.itemCount ?? null,
+    p_notes: input.notes ?? null,
+    p_customer_id: input.customerId,
   });
+  if (error) throw fromRpc(error.message);
 
-  const order = getOrder(insert())!;
-  notify("NEW_ORDER", order);
+  const order = (await getOrder(Number(data)))!;
+  await notify("NEW_ORDER", order);
   return order;
 }
 
@@ -292,15 +306,17 @@ export interface TransitionOptions {
 
 /**
  * Moves an order to a new status, enforcing the state machine (BR-006),
- * role permissions (BR-005) and history recording (BR-007).
+ * role permissions (BR-005) and history recording (BR-007). The checks here
+ * turn a bad request into a clean message; transition_order() in the schema
+ * repeats them, and that is the one that cannot be bypassed.
  */
-export function transitionOrder(
+export async function transitionOrder(
   orderId: number,
   to: OrderStatus,
   user: SessionUser,
   options: TransitionOptions = {},
-): OrderWithDetails {
-  const order = getOrder(orderId);
+): Promise<OrderWithDetails> {
+  const order = await getOrder(orderId);
   if (!order) throw notFound();
 
   // BR-009: a completed order can only be touched by an administrator.
@@ -319,88 +335,84 @@ export function transitionOrder(
   if (order.status === to) return order;
   if (!canTransition(order.status, to)) throw conflict(ERRORS.invalidTransition);
 
-  const stamp = TIMESTAMP_COLUMN[to];
-  const timestamp = now();
-  const stampClause = stamp ? ", " + stamp + " = ?" : "";
-  const params: unknown[] = [to, options.actualBagCount ?? null, timestamp];
-  if (stamp) params.push(timestamp);
-  params.push(orderId);
+  const supabase = await supabaseServer();
+  const { error } = await supabase.rpc("transition_order", {
+    p_order_id: orderId,
+    p_to: to,
+    p_notes: options.notes ?? STATUS_LABELS[to],
+    p_actual_bags: options.actualBagCount ?? null,
+  });
+  if (error) throw fromRpc(error.message);
 
-  db.transaction(() => {
-    run(
-      `UPDATE laundry_orders
-       SET status = ?,
-           actual_bag_count = COALESCE(?, actual_bag_count),
-           updated_at = ?` +
-        stampClause +
-        " WHERE id = ?",
-      ...params,
-    );
-    run(
-      "INSERT INTO order_status_history (order_id, status, changed_by, notes) VALUES (?, ?, ?, ?)",
-      orderId,
-      to,
-      user.id,
-      options.notes ?? STATUS_LABELS[to],
-    );
-    if (to === "PICKED_UP") {
-      run("UPDATE route_orders SET status = 'COLLECTED' WHERE order_id = ?", orderId);
-    }
-  })();
-
-  const updated = getOrder(orderId)!;
+  const updated = (await getOrder(orderId))!;
   const event = EVENT_FOR_STATUS[to];
-  if (event) notify(event, updated);
+  if (event) await notify(event, updated);
   return updated;
 }
 
 /** FR-007: only an administrator assigns a pickup agent (BR-003). */
-export function assignPickupAgent(orderId: number, agentId: number, admin: SessionUser): OrderWithDetails {
-  const order = getOrder(orderId);
+export async function assignPickupAgent(
+  orderId: number,
+  agentId: number,
+  admin: SessionUser,
+): Promise<OrderWithDetails> {
+  const order = await getOrder(orderId);
   if (!order) throw notFound();
   if (order.status !== "PENDING" && order.status !== "PICKUP_ASSIGNED") {
     throw conflict("This order is already past the pickup stage.");
   }
-  assertActiveAgent(agentId);
 
-  run("UPDATE laundry_orders SET pickup_agent_id = ?, updated_at = ? WHERE id = ?", agentId, now(), orderId);
+  const supabase = await supabaseServer();
+  const { error } = await supabase.rpc("assign_agent", {
+    p_order_id: orderId,
+    p_agent_id: agentId,
+    p_delivery: false,
+  });
+  if (error) throw fromRpc(error.message);
+
   if (order.status === "PENDING") {
     return transitionOrder(orderId, "PICKUP_ASSIGNED", admin, { notes: "Pickup agent assigned" });
   }
-  const updated = getOrder(orderId)!;
-  notify("AGENT_ASSIGNED", updated);
+  const updated = (await getOrder(orderId))!;
+  await notify("AGENT_ASSIGNED", updated);
   return updated;
 }
 
 /** FR-016: assigns a delivery agent, moving READY -> OUT_FOR_DELIVERY. */
-export function assignDeliveryAgent(orderId: number, agentId: number, admin: SessionUser): OrderWithDetails {
-  const order = getOrder(orderId);
+export async function assignDeliveryAgent(
+  orderId: number,
+  agentId: number,
+  admin: SessionUser,
+): Promise<OrderWithDetails> {
+  const order = await getOrder(orderId);
   if (!order) throw notFound();
   if (order.status !== "READY" && order.status !== "OUT_FOR_DELIVERY") {
     throw conflict("Only a ready order can be assigned for delivery.");
   }
-  assertActiveAgent(agentId);
 
-  run("UPDATE laundry_orders SET delivery_agent_id = ?, updated_at = ? WHERE id = ?", agentId, now(), orderId);
+  const supabase = await supabaseServer();
+  const { error } = await supabase.rpc("assign_agent", {
+    p_order_id: orderId,
+    p_agent_id: agentId,
+    p_delivery: true,
+  });
+  if (error) throw fromRpc(error.message);
+
   if (order.status === "READY") {
     return transitionOrder(orderId, "OUT_FOR_DELIVERY", admin, { notes: "Delivery agent assigned" });
   }
-  const updated = getOrder(orderId)!;
-  notify("DELIVERY_ASSIGNED", updated);
+  const updated = (await getOrder(orderId))!;
+  await notify("DELIVERY_ASSIGNED", updated);
   return updated;
 }
 
-function assertActiveAgent(agentId: number): void {
-  const agent = get<{ id: number }>(
-    "SELECT id FROM users WHERE id = ? AND role = 'PICKUP_AGENT' AND is_active = 1",
-    agentId,
-  );
-  if (!agent) throw badRequest(ERRORS.agentUnavailable);
-}
-
 /** FR-014 / BR-010: shop staff and administrators set the final price. */
-export function setPrice(orderId: number, price: number, user: SessionUser): OrderWithDetails {
-  const order = getOrder(orderId);
+export async function setPrice(
+  orderId: number,
+  price: number,
+  user: SessionUser,
+): Promise<OrderWithDetails> {
+  const order = await getOrder(orderId);
   if (!order) throw notFound();
   if (user.role !== "SHOP_STAFF" && user.role !== "ADMIN") throw forbidden();
   assertCanView(user, order);
@@ -409,20 +421,19 @@ export function setPrice(orderId: number, price: number, user: SessionUser): Ord
     throw conflict("This order is already completed.");
   }
 
-  run("UPDATE laundry_orders SET price = ?, updated_at = ? WHERE id = ?", price, now(), orderId);
-  run(
-    "INSERT INTO order_status_history (order_id, status, changed_by, notes) VALUES (?, ?, ?, ?)",
-    orderId,
-    order.status,
-    user.id,
-    "Price set to LKR " + price.toLocaleString("en-LK"),
-  );
-  return getOrder(orderId)!;
+  const supabase = await supabaseServer();
+  const { error } = await supabase.rpc("set_order_price", { p_order_id: orderId, p_price: price });
+  if (error) throw fromRpc(error.message);
+  return (await getOrder(orderId))!;
 }
 
 /** Customers may cancel only before the laundry has been collected. */
-export function cancelOrder(orderId: number, user: SessionUser, reason?: string): OrderWithDetails {
-  const order = getOrder(orderId);
+export async function cancelOrder(
+  orderId: number,
+  user: SessionUser,
+  reason?: string,
+): Promise<OrderWithDetails> {
+  const order = await getOrder(orderId);
   if (!order) throw notFound();
   assertCanView(user, order);
   if (user.role !== "CUSTOMER" && user.role !== "ADMIN") throw forbidden();
@@ -436,16 +447,17 @@ export function cancelOrder(orderId: number, user: SessionUser, reason?: string)
 }
 
 /** FR-023: the status counts shown on the admin dashboard. */
-export function statusCounts(pickupDate?: string): Record<string, number> {
-  const rows = pickupDate
-    ? all<{ status: string; c: number }>(
-        "SELECT status, COUNT(*) AS c FROM laundry_orders WHERE pickup_date = ? GROUP BY status",
-        pickupDate,
-      )
-    : all<{ status: string; c: number }>("SELECT status, COUNT(*) AS c FROM laundry_orders GROUP BY status");
+export async function statusCounts(pickupDate?: string): Promise<Record<string, number>> {
+  const supabase = await supabaseServer();
+  let query = supabase.from("laundry_orders").select("status");
+  if (pickupDate) query = query.eq("pickup_date", pickupDate);
+  const { data, error } = await query;
+  if (error) throw error;
 
+  // PostgREST has no GROUP BY. At this size counting here is cheaper than a
+  // view per filter; if the board grows, move it into one.
   const counts: Record<string, number> = { CANCELLED: 0 };
   for (const status of ORDER_STATUSES) counts[status] = 0;
-  for (const row of rows) counts[row.status] = row.c;
+  for (const row of data ?? []) counts[row.status] = (counts[row.status] ?? 0) + 1;
   return counts;
 }

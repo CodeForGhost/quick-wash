@@ -12,8 +12,8 @@ export default async function NewRoutePage() {
   await requireRole("ADMIN");
 
   // Only orders that have not been collected yet can join a round.
-  const candidates = listOrders({ statuses: ["PENDING", "PICKUP_ASSIGNED"] });
-  const agents = listAgentsWithWorkload().filter((agent) => agent.is_active);
+  const candidates = await listOrders({ statuses: ["PENDING", "PICKUP_ASSIGNED"] });
+  const agents = (await listAgentsWithWorkload()).filter((agent) => agent.is_active);
 
   return (
     <>

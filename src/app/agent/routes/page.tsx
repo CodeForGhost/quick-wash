@@ -10,7 +10,14 @@ export const metadata = { title: "My routes · QuickWash" };
 /** FR-022: the agent's batched rounds, in the order they should be driven. */
 export default async function AgentRoutesPage() {
   const user = await requireRole("PICKUP_AGENT");
-  const routes = listRoutes(user.id);
+  const routes = await listRoutes(user.id);
+
+  // The stops for every route, fetched together rather than inside the render.
+  const stopsByRoute = new Map(
+    await Promise.all(
+      routes.map(async (route) => [route.id, await getRouteOrders(route.id)] as const),
+    ),
+  );
 
   return (
     <>
@@ -28,7 +35,7 @@ export default async function AgentRoutesPage() {
       ) : (
         <div className="space-y-6">
           {routes.map((route) => {
-            const stops = getRouteOrders(route.id);
+            const stops = stopsByRoute.get(route.id) ?? [];
             const collected = stops.filter((stop) => stop.order_status !== "PICKUP_ASSIGNED").length;
 
             return (

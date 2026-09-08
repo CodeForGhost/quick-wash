@@ -9,7 +9,7 @@ export const metadata = { title: "Deliveries · QuickWash" };
 /** SRS 13.2 screen 6: clean laundry waiting to go back to customers. */
 export default async function AgentDeliveriesPage() {
   const user = await requireRole("PICKUP_AGENT");
-  const orders = listOrders({
+  const orders = await listOrders({
     deliveryAgentId: user.id,
     statuses: ["OUT_FOR_DELIVERY", "DELIVERED"],
   });

@@ -10,5 +10,5 @@ export const PATCH = handle(async (request: Request, { params }: Params) => {
   const user = await requireUser("SHOP_STAFF", "ADMIN");
   const { id } = await params;
   const input = priceSchema.parse(await readJson(request));
-  return ok(setPrice(Number(id), input.price, user));
+  return ok(await setPrice(Number(id), input.price, user));
 });

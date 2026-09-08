@@ -6,7 +6,7 @@ import { createOrderSchema } from "@/lib/validation";
 /** BR-008: a customer only ever sees their own orders. */
 export const GET = handle(async () => {
   const user = await requireUser();
-  const orders = user.role === "CUSTOMER" ? listOrders({ customerId: user.id }) : listOrders();
+  const orders = user.role === "CUSTOMER" ? await listOrders({ customerId: user.id }) : await listOrders();
   return ok(orders);
 });
 
@@ -14,7 +14,7 @@ export const GET = handle(async () => {
 export const POST = handle(async (request: Request) => {
   const user = await requireUser("CUSTOMER", "ADMIN");
   const input = createOrderSchema.parse(await readJson(request));
-  const order = createOrder(
+  const order = await createOrder(
     {
       customerId: user.id,
       addressId: input.address_id,

@@ -14,7 +14,7 @@ export default async function DeliveryDetailPage({ params }: { params: Promise<{
   const user = await requireRole("PICKUP_AGENT");
   const { id } = await params;
 
-  const order = getOrder(Number(id));
+  const order = await getOrder(Number(id));
   // BR-004: only the assigned delivery agent may open this.
   if (!order || order.delivery_agent_id !== user.id) notFound();
 
@@ -89,7 +89,7 @@ export default async function DeliveryDetailPage({ params }: { params: Promise<{
 
         <Card className="p-5">
           <SectionHeading eyebrow="Trail" title="What has happened" />
-          <StatusTrail entries={getStatusHistory(order.id)} />
+          <StatusTrail entries={await getStatusHistory(order.id)} />
         </Card>
       </div>
     </>

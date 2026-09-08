@@ -18,7 +18,7 @@ export const GET = handle(async (request: Request) => {
   const statuses = group ? GROUPS[group] : undefined;
 
   return ok(
-    listOrders({
+    await listOrders({
       shopId: user.shop_id ?? undefined,
       statuses,
       search: searchParams.get("q") ?? undefined,

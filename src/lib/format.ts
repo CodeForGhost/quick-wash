@@ -5,18 +5,30 @@ export function formatPrice(value: number | null | undefined): string {
   return "LKR " + value.toLocaleString("en-LK", { maximumFractionDigits: 2 });
 }
 
+/**
+ * Postgres hands back two shapes and they must not be parsed the same way:
+ * a `date` column arrives as `2026-09-03`, a `timestamptz` as a full ISO
+ * instant with an offset already on it. Appending a `Z` to the second makes an
+ * invalid date, so the two shapes are told apart rather than patched.
+ */
+function parse(value: string): Date {
+  // A bare calendar day is local midnight, not UTC midnight: `pickup_date` is
+  // the day the agent knocks on the door, in the town's own timezone.
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(value + "T00:00:00") : new Date(value);
+}
+
 /** `2026-09-03` -> `03 Sep 2026`. */
 export function formatDate(value: string | null | undefined): string {
   if (!value) return "-";
-  const date = new Date(value.includes("T") || value.includes(" ") ? value.replace(" ", "T") + "Z" : value + "T00:00:00");
+  const date = parse(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 }
 
-/** SQLite timestamps are stored in UTC; render them in the viewer's timezone. */
+/** Timestamps are stored in UTC; render them in the viewer's timezone. */
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "-";
-  const date = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+  const date = parse(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("en-GB", {
     day: "2-digit",
@@ -29,7 +41,7 @@ export function formatDateTime(value: string | null | undefined): string {
 
 export function formatTime(value: string | null | undefined): string {
   if (!value) return "-";
-  const date = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
+  const date = parse(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: true });
 }
@@ -58,3 +70,10 @@ export const STATUS_TONE: Record<OrderStatus, string> = {
   DELIVERED: "bg-slate-200 text-slate-700 ring-slate-500/20",
   CANCELLED: "bg-rose-100 text-rose-800 ring-rose-600/20",
 };
+
+/** Today as `YYYY-MM-DD`, in the server's local timezone. */
+export function today(): string {
+  const d = new Date();
+  const offset = d.getTimezoneOffset() * 60_000;
+  return new Date(d.getTime() - offset).toISOString().slice(0, 10);
+}

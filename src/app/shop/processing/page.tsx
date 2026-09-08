@@ -8,7 +8,7 @@ export const metadata = { title: "Processing · QuickWash" };
 /** SRS 13.3 screen 5 / FR-013. */
 export default async function ShopProcessingPage() {
   const user = await requireRole("SHOP_STAFF");
-  const orders = listOrders({
+  const orders = await listOrders({
     shopId: user.shop_id ?? undefined,
     statuses: ["AT_LAUNDRY", "WASHING", "DRYING", "IRONING"],
   });

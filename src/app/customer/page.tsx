@@ -12,8 +12,8 @@ export const metadata = { title: "Home · QuickWash" };
 /** SRS 13.1 screen 3: the customer's home, built around the order in flight. */
 export default async function CustomerHome() {
   const user = await requireRole("CUSTOMER");
-  const orders = listOrders({ customerId: user.id });
-  const addresses = listAddresses(user.id);
+  const orders = await listOrders({ customerId: user.id });
+  const addresses = await listAddresses(user.id);
 
   const active = orders.filter((order) => order.status !== "DELIVERED" && order.status !== "CANCELLED");
   const past = orders.filter((order) => order.status === "DELIVERED");

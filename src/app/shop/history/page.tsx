@@ -9,7 +9,7 @@ export const metadata = { title: "History · QuickWash" };
 /** SRS 13.3 screen 7. */
 export default async function ShopHistoryPage() {
   const user = await requireRole("SHOP_STAFF");
-  const orders = listOrders({ shopId: user.shop_id ?? undefined, statuses: ["DELIVERED"] });
+  const orders = await listOrders({ shopId: user.shop_id ?? undefined, statuses: ["DELIVERED"] });
 
   const revenue = orders.reduce((total, order) => total + (order.price ?? 0), 0);
   const items = orders.reduce((total, order) => total + (order.item_count ?? 0), 0);

@@ -1,7 +1,7 @@
 import { handle, ok } from "@/lib/api";
-import { destroySession } from "@/lib/auth";
+import { signOut } from "@/lib/auth";
 
 export const POST = handle(async () => {
-  await destroySession();
+  await signOut();
   return ok({ signedOut: true });
 });

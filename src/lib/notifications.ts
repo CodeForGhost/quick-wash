@@ -1,90 +1,24 @@
-import { all, run } from "./db";
+import "server-only";
+import { supabaseServer } from "./supabase/server";
+import { EVENTS, type Audience, type NotificationEvent } from "./notification-events";
 import type { LaundryOrder, Notification } from "./types";
 
-/** Notification events from SRS section 19. */
-export type NotificationEvent =
-  | "NEW_ORDER"
-  | "AGENT_ASSIGNED"
-  | "PICKED_UP"
-  | "RECEIVED"
-  | "PROCESSING_STARTED"
-  | "READY"
-  | "DELIVERY_ASSIGNED"
-  | "DELIVERED"
-  | "CANCELLED";
+export type { NotificationEvent } from "./notification-events";
 
-type Audience = "customer" | "pickup_agent" | "delivery_agent" | "shop";
-
-interface EventSpec {
-  title: string;
-  body: (order: LaundryOrder) => string;
-  to: Audience[];
-}
-
-// The recipient matrix in SRS section 19.
-const EVENTS: Record<NotificationEvent, EventSpec> = {
-  NEW_ORDER: {
-    title: "Pickup requested",
-    body: (o) => `Order ${o.order_number} was created for ${o.pickup_date}, ${o.pickup_time_slot}.`,
-    to: ["customer", "shop"],
-  },
-  AGENT_ASSIGNED: {
-    title: "Pickup agent assigned",
-    body: (o) => `A pickup agent is on the way for order ${o.order_number}.`,
-    to: ["customer", "pickup_agent"],
-  },
-  PICKED_UP: {
-    title: "Laundry collected",
-    body: (o) => `Your laundry for order ${o.order_number} has been collected.`,
-    to: ["customer", "shop"],
-  },
-  RECEIVED: {
-    title: "Laundry received at shop",
-    body: (o) => `Order ${o.order_number} has arrived at the laundry shop.`,
-    to: ["customer"],
-  },
-  PROCESSING_STARTED: {
-    title: "Processing started",
-    body: (o) => `Order ${o.order_number} is now being processed.`,
-    to: ["customer"],
-  },
-  READY: {
-    title: "Laundry ready",
-    body: (o) => `Order ${o.order_number} is ready and will be delivered soon.`,
-    to: ["customer"],
-  },
-  DELIVERY_ASSIGNED: {
-    title: "Out for delivery",
-    body: (o) => `Order ${o.order_number} is out for delivery.`,
-    to: ["customer", "delivery_agent"],
-  },
-  DELIVERED: {
-    title: "Laundry delivered",
-    body: (o) => `Order ${o.order_number} has been delivered. Thank you!`,
-    to: ["customer"],
-  },
-  CANCELLED: {
-    title: "Order cancelled",
-    body: (o) => `Order ${o.order_number} was cancelled.`,
-    to: ["customer", "shop"],
-  },
-};
-
-function recipients(order: LaundryOrder, audiences: Audience[]): number[] {
+async function recipients(order: LaundryOrder, audiences: Audience[]): Promise<number[]> {
+  const supabase = await supabaseServer();
   const ids = new Set<number>();
+
   for (const audience of audiences) {
     if (audience === "customer") ids.add(order.customer_id);
     if (audience === "pickup_agent" && order.pickup_agent_id) ids.add(order.pickup_agent_id);
     if (audience === "delivery_agent" && order.delivery_agent_id) ids.add(order.delivery_agent_id);
     if (audience === "shop") {
       // Shop notifications go to every active staff member of the assigned shop.
-      const staff = order.laundry_shop_id
-        ? all<{ id: number }>(
-            "SELECT id FROM users WHERE role = 'SHOP_STAFF' AND is_active = 1 AND shop_id = ?",
-            order.laundry_shop_id,
-          )
-        : all<{ id: number }>("SELECT id FROM users WHERE role = 'SHOP_STAFF' AND is_active = 1");
-      staff.forEach((s) => ids.add(s.id));
+      let query = supabase.from("users").select("id").eq("role", "SHOP_STAFF").eq("is_active", true);
+      if (order.laundry_shop_id) query = query.eq("shop_id", order.laundry_shop_id);
+      const { data } = await query;
+      for (const row of data ?? []) ids.add(row.id);
     }
   }
   return [...ids];
@@ -93,39 +27,59 @@ function recipients(order: LaundryOrder, audiences: Audience[]): number[] {
 /**
  * Records in-app notifications for an event. For the MVP these are stored and
  * shown in the app; a WhatsApp/SMS provider can be plugged in here later.
+ *
+ * The insert goes through notify_users() because row level security lets you
+ * read only your own notifications - you could never insert someone else's,
+ * which is exactly what a notification is.
  */
-export function notify(event: NotificationEvent, order: LaundryOrder): void {
+export async function notify(event: NotificationEvent, order: LaundryOrder): Promise<void> {
   const spec = EVENTS[event];
   if (!spec) return;
-  const body = spec.body(order);
-  for (const userId of recipients(order, spec.to)) {
-    run(
-      "INSERT INTO notifications (user_id, order_id, event, title, body) VALUES (?, ?, ?, ?, ?)",
-      userId,
-      order.id,
-      event,
-      spec.title,
-      body,
-    );
-  }
+
+  const userIds = await recipients(order, spec.to);
+  if (!userIds.length) return;
+
+  const supabase = await supabaseServer();
+  const { error } = await supabase.rpc("notify_users", {
+    p_user_ids: userIds,
+    p_order_id: order.id,
+    p_event: event,
+    p_title: spec.title,
+    p_body: spec.body(order),
+  });
+  if (error) throw error;
 }
 
-export function listNotifications(userId: number, limit = 30): Notification[] {
-  return all<Notification>(
-    "SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
-    userId,
-    limit,
-  );
+export async function listNotifications(userId: number, limit = 30): Promise<Notification[]> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as Notification[];
 }
 
-export function unreadCount(userId: number): number {
-  const rows = all<{ c: number }>(
-    "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND is_read = 0",
-    userId,
-  );
-  return rows[0]?.c ?? 0;
+export async function unreadCount(userId: number): Promise<number> {
+  const supabase = await supabaseServer();
+  const { count, error } = await supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .eq("is_read", false);
+  if (error) throw error;
+  return count ?? 0;
 }
 
-export function markAllRead(userId: number): void {
-  run("UPDATE notifications SET is_read = 1 WHERE user_id = ?", userId);
+export async function markAllRead(userId: number): Promise<void> {
+  const supabase = await supabaseServer();
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true })
+    .eq("user_id", userId)
+    .eq("is_read", false);
+  if (error) throw error;
 }

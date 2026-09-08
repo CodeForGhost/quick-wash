@@ -15,7 +15,7 @@ export default async function AddressesPage() {
         title="Your addresses"
         subtitle="Save the places we should collect from. You pick one each time you book."
       />
-      <AddressBook initial={listAddresses(user.id)} defaultPhone={user.phone} />
+      <AddressBook initial={await listAddresses(user.id)} defaultPhone={user.phone} />
     </>
   );
 }

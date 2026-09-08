@@ -11,7 +11,7 @@ export const PATCH = handle(async (request: Request, { params }: Params) => {
   const { id } = await params;
   const input = updateUserSchema.parse(await readJson(request));
   return ok(
-    updateUser(Number(id), {
+    await updateUser(Number(id), {
       name: input.name,
       phone: input.phone,
       email: input.email,

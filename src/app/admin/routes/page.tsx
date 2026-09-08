@@ -12,10 +12,17 @@ export const metadata = { title: "Pickup routes · QuickWash" };
  */
 export default async function AdminRoutesPage() {
   await requireRole("ADMIN");
-  const routes = listRoutes();
+  const routes = await listRoutes();
 
   const stops = routes.reduce((total, route) => total + route.order_count, 0);
   const perRoute = routes.length ? (stops / routes.length).toFixed(1) : "0";
+
+  // The stops for every route, fetched together rather than inside the render.
+  const stopsByRoute = new Map(
+    await Promise.all(
+      routes.map(async (route) => [route.id, await getRouteOrders(route.id)] as const),
+    ),
+  );
 
   return (
     <>
@@ -50,7 +57,7 @@ export default async function AdminRoutesPage() {
       ) : (
         <div className="space-y-5">
           {routes.map((route) => {
-            const orders = getRouteOrders(route.id);
+            const orders = stopsByRoute.get(route.id) ?? [];
             const collected = orders.filter((order) => order.order_status !== "PICKUP_ASSIGNED").length;
             const bags = orders.reduce((total, order) => total + order.bag_count, 0);
 

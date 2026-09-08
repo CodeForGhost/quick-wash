@@ -10,7 +10,7 @@ export const POST = handle(async (request: Request, { params }: Params) => {
   const user = await requireUser("PICKUP_AGENT", "ADMIN");
   const { id } = await params;
   const input = pickupSchema.parse(await readJson(request));
-  const order = transitionOrder(Number(id), "PICKED_UP", user, {
+  const order = await transitionOrder(Number(id), "PICKED_UP", user, {
     actualBagCount: input.actual_bag_count ?? null,
     notes: input.notes || "Laundry collected",
   });

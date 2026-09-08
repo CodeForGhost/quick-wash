@@ -15,7 +15,7 @@ export default async function AdminCustomersPage({
 }) {
   await requireRole("ADMIN");
   const { q } = await searchParams;
-  const customers = listCustomers(q || undefined);
+  const customers = await listCustomers(q || undefined);
 
   const repeat = customers.filter((customer) => customer.order_count > 1).length;
   const spend = customers.reduce((total, customer) => total + (customer.total_spend ?? 0), 0);

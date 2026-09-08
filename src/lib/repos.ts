@@ -1,30 +1,53 @@
-import { all, db, get, now, run } from "./db";
+import "server-only";
+import { supabaseServer } from "./supabase/server";
+import { supabaseAdmin } from "./supabase/admin";
+import { phoneToAuthEmail } from "./supabase/env";
 import { badRequest, conflict, notFound } from "./errors";
-import { hashPassword, verifyPassword } from "./password";
 import { normalisePhone } from "./validation";
 import type { Address, LaundryShop, PickupRoute, Role, RouteOrder, User } from "./types";
 
+/**
+ * Users, addresses, shops, routes and settings.
+ *
+ * Row level security does the real enforcement: each call runs as the
+ * signed-in person, so a query that asks for more than it should comes back
+ * empty rather than leaking. The role checks in the route handlers are the
+ * second lock, not the only one.
+ */
+
+/** PostgREST reads or=(...) as a comma-separated list, so quote the value. */
+function quoted(term: string): string {
+  return `"%${term.replace(/["\\]/g, "")}%"`;
+}
+
 // --- Users -------------------------------------------------------------------
 
-export function findUserByPhone(phone: string): (User & { password_hash: string }) | undefined {
-  return get<User & { password_hash: string }>("SELECT * FROM users WHERE phone = ?", normalisePhone(phone));
+export async function findUserByPhone(phone: string): Promise<User | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase
+    .from("users")
+    .select("*")
+    .eq("phone", normalisePhone(phone))
+    .maybeSingle();
+  return (data as User | null) ?? undefined;
 }
 
-export function getUser(id: number): User | undefined {
-  return get<User>("SELECT * FROM users WHERE id = ?", id);
+export async function getUser(id: number): Promise<User | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase.from("users").select("*").eq("id", id).maybeSingle();
+  return (data as User | null) ?? undefined;
 }
 
-export function listUsers(role: Role, search?: string): User[] {
+export async function listUsers(role: Role, search?: string): Promise<User[]> {
+  const supabase = await supabaseServer();
+  let query = supabase.from("users").select("*").eq("role", role);
   if (search) {
-    const like = "%" + search + "%";
-    return all<User>(
-      "SELECT * FROM users WHERE role = ? AND (name LIKE ? OR phone LIKE ?) ORDER BY name",
-      role,
-      like,
-      like,
-    );
+    const t = quoted(search);
+    query = query.or(`name.ilike.${t},phone.ilike.${t}`);
   }
-  return all<User>("SELECT * FROM users WHERE role = ? ORDER BY name", role);
+  const { data, error } = await query.order("name");
+  if (error) throw error;
+  return (data ?? []) as User[];
 }
 
 export interface NewUser {
@@ -36,20 +59,48 @@ export interface NewUser {
   shopId?: number | null;
 }
 
-export function createUser(input: NewUser): User {
+/**
+ * FR-025: an administrator creates an agent or shop staff account.
+ *
+ * Two steps on purpose. The auth account comes first and the trigger gives it
+ * a CUSTOMER row; the role is then set in a separate write that only the
+ * service role can make. Signup metadata is client-controlled, so it can never
+ * be allowed to name a role.
+ */
+export async function createUser(input: NewUser): Promise<User> {
   const phone = normalisePhone(input.phone);
-  if (findUserByPhone(phone)) throw conflict("An account with this mobile number already exists.");
+  if (await findUserByPhone(phone)) {
+    throw conflict("An account with this mobile number already exists.");
+  }
 
-  const result = run(
-    "INSERT INTO users (name, phone, email, password_hash, role, shop_id) VALUES (?, ?, ?, ?, ?, ?)",
-    input.name,
-    phone,
-    input.email || null,
-    hashPassword(input.password),
-    input.role,
-    input.shopId ?? null,
-  );
-  return getUser(Number(result.lastInsertRowid))!;
+  const admin = supabaseAdmin();
+  const { data, error } = await admin.auth.admin.createUser({
+    email: phoneToAuthEmail(phone),
+    password: input.password,
+    email_confirm: true,
+    user_metadata: { name: input.name, phone, contact_email: input.email || "" },
+  });
+
+  if (error || !data.user) {
+    throw badRequest(error?.message ?? "That account could not be created.");
+  }
+
+  // The trigger made a CUSTOMER row, because signup metadata cannot be trusted
+  // with a role. Promoting it is a separate write that only the service role
+  // can make, which is what makes the role safe.
+  const { data: promoted, error: promoteError } = await admin
+    .from("users")
+    .update({ role: input.role, shop_id: input.shopId ?? null })
+    .eq("auth_id", data.user.id)
+    .select("*")
+    .single();
+
+  if (promoteError) {
+    // Leave no half-made account behind.
+    await admin.auth.admin.deleteUser(data.user.id).catch(() => {});
+    throw badRequest(promoteError.message);
+  }
+  return promoted as User;
 }
 
 export interface UserUpdate {
@@ -61,45 +112,76 @@ export interface UserUpdate {
   shop_id?: number | null;
 }
 
-export function updateUser(id: number, patch: UserUpdate): User {
-  const user = getUser(id);
+export async function updateUser(id: number, patch: UserUpdate): Promise<User> {
+  const supabase = await supabaseServer();
+  const user = await getUser(id);
   if (!user) throw notFound();
 
   if (patch.phone) {
     const phone = normalisePhone(patch.phone);
-    const clash = findUserByPhone(phone);
+    const clash = await findUserByPhone(phone);
     if (clash && clash.id !== id) throw conflict("That mobile number is already registered.");
   }
 
-  const fields: string[] = [];
-  const params: unknown[] = [];
-  const push = (column: string, value: unknown) => {
-    fields.push(column + " = ?");
-    params.push(value);
-  };
+  const fields: Record<string, unknown> = {};
+  if (patch.name !== undefined) fields.name = patch.name;
+  if (patch.phone !== undefined) fields.phone = normalisePhone(patch.phone);
+  if (patch.email !== undefined) fields.email = patch.email || null;
+  if (patch.is_active !== undefined) fields.is_active = patch.is_active;
+  if (patch.shop_id !== undefined) fields.shop_id = patch.shop_id;
 
-  if (patch.name !== undefined) push("name", patch.name);
-  if (patch.phone !== undefined) push("phone", normalisePhone(patch.phone));
-  if (patch.email !== undefined) push("email", patch.email || null);
-  if (patch.password) push("password_hash", hashPassword(patch.password));
-  if (patch.is_active !== undefined) push("is_active", patch.is_active ? 1 : 0);
-  if (patch.shop_id !== undefined) push("shop_id", patch.shop_id);
-
-  if (fields.length) {
-    push("updated_at", now());
-    params.push(id);
-    run("UPDATE users SET " + fields.join(", ") + " WHERE id = ?", ...params);
+  if (Object.keys(fields).length) {
+    fields.updated_at = new Date().toISOString();
+    const { error } = await supabase.from("users").update(fields).eq("id", id);
+    if (error) throw error;
   }
+
+  // The password and the sign-in address live in auth, not in this table.
+  if (patch.password || patch.phone) {
+    if (!user.auth_id) throw badRequest("That account has no sign-in yet.");
+    const admin = supabaseAdmin();
+    const { error } = await admin.auth.admin.updateUserById(user.auth_id, {
+      ...(patch.password ? { password: patch.password } : {}),
+      ...(patch.phone ? { email: phoneToAuthEmail(normalisePhone(patch.phone)) } : {}),
+    });
+    if (error) throw badRequest(error.message);
+  }
+
   // Deactivating an account must also end its active sessions.
-  if (patch.is_active === false) run("DELETE FROM sessions WHERE user_id = ?", id);
-  return getUser(id)!;
+  if (patch.is_active === false && user.auth_id) {
+    await supabaseAdmin().auth.admin.signOut(user.auth_id, "global").catch(() => {});
+  }
+
+  return (await getUser(id))!;
 }
 
-export function changePassword(id: number, currentPassword: string, newPassword: string): void {
-  const row = get<{ password_hash: string }>("SELECT password_hash FROM users WHERE id = ?", id);
-  if (!row) throw notFound();
-  if (!verifyPassword(currentPassword, row.password_hash)) throw badRequest("Your current password is incorrect.");
-  run("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?", hashPassword(newPassword), now(), id);
+/**
+ * FR-003: the signed-in person changes their own password. Supabase has no
+ * "verify this password" call, so the current one is checked by signing in
+ * with it on a throwaway client that never touches the cookie jar.
+ */
+export async function changePassword(
+  id: number,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const user = await getUser(id);
+  if (!user) throw notFound();
+
+  const { createClient } = await import("@supabase/supabase-js");
+  const { SUPABASE_ANON_KEY, SUPABASE_URL } = await import("./supabase/env");
+  const probe = createClient(SUPABASE_URL(), SUPABASE_ANON_KEY(), {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { error: wrong } = await probe.auth.signInWithPassword({
+    email: phoneToAuthEmail(user.phone),
+    password: currentPassword,
+  });
+  if (wrong) throw badRequest("Your current password is incorrect.");
+
+  const supabase = await supabaseServer();
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw badRequest(error.message);
 }
 
 /** FR-025: how much work each agent is currently carrying. */
@@ -109,19 +191,15 @@ export interface AgentWorkload extends User {
   completed: number;
 }
 
-export function listAgentsWithWorkload(): AgentWorkload[] {
-  return all<AgentWorkload>(
-    `SELECT u.*,
-            (SELECT COUNT(*) FROM laundry_orders o
-              WHERE o.pickup_agent_id = u.id AND o.status = 'PICKUP_ASSIGNED')   AS active_pickups,
-            (SELECT COUNT(*) FROM laundry_orders o
-              WHERE o.delivery_agent_id = u.id AND o.status = 'OUT_FOR_DELIVERY') AS active_deliveries,
-            (SELECT COUNT(*) FROM laundry_orders o
-              WHERE o.delivery_agent_id = u.id AND o.status = 'DELIVERED')        AS completed
-     FROM users u
-     WHERE u.role = 'PICKUP_AGENT'
-     ORDER BY u.is_active DESC, u.name`,
-  );
+export async function listAgentsWithWorkload(): Promise<AgentWorkload[]> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("agent_workload")
+    .select("*")
+    .order("is_active", { ascending: false })
+    .order("name");
+  if (error) throw error;
+  return (data ?? []) as AgentWorkload[];
 }
 
 /** FR-024: customers with their order totals. */
@@ -131,35 +209,42 @@ export interface CustomerSummary extends User {
   last_order_at: string | null;
 }
 
-export function listCustomers(search?: string): CustomerSummary[] {
-  const like = search ? "%" + search + "%" : null;
-  const clause = like ? " AND (u.name LIKE ? OR u.phone LIKE ?)" : "";
-  const params = like ? [like, like] : [];
-  return all<CustomerSummary>(
-    `SELECT u.*,
-            (SELECT COUNT(*) FROM laundry_orders o WHERE o.customer_id = u.id) AS order_count,
-            (SELECT SUM(o.price) FROM laundry_orders o
-              WHERE o.customer_id = u.id AND o.status = 'DELIVERED')           AS total_spend,
-            (SELECT MAX(o.created_at) FROM laundry_orders o WHERE o.customer_id = u.id) AS last_order_at
-     FROM users u
-     WHERE u.role = 'CUSTOMER'` +
-      clause +
-      " ORDER BY u.created_at DESC",
-    ...params,
-  );
+export async function listCustomers(search?: string): Promise<CustomerSummary[]> {
+  const supabase = await supabaseServer();
+  let query = supabase.from("customer_summary").select("*");
+  if (search) {
+    const t = quoted(search);
+    query = query.or(`name.ilike.${t},phone.ilike.${t}`);
+  }
+  const { data, error } = await query.order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as CustomerSummary[];
 }
 
 // --- Addresses (FR-004) ------------------------------------------------------
 
-export function listAddresses(userId: number): Address[] {
-  return all<Address>(
-    "SELECT * FROM addresses WHERE user_id = ? AND is_deleted = 0 ORDER BY id",
-    userId,
-  );
+export async function listAddresses(userId: number): Promise<Address[]> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("addresses")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("is_deleted", false)
+    .order("id");
+  if (error) throw error;
+  return (data ?? []) as Address[];
 }
 
-export function getAddress(id: number, userId: number): Address | undefined {
-  return get<Address>("SELECT * FROM addresses WHERE id = ? AND user_id = ? AND is_deleted = 0", id, userId);
+export async function getAddress(id: number, userId: number): Promise<Address | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase
+    .from("addresses")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .eq("is_deleted", false)
+    .maybeSingle();
+  return (data as Address | null) ?? undefined;
 }
 
 export interface AddressInput {
@@ -172,63 +257,84 @@ export interface AddressInput {
   longitude?: number | null;
 }
 
-export function createAddress(userId: number, input: AddressInput): Address {
-  const result = run(
-    `INSERT INTO addresses (user_id, label, address, area, landmark, phone, latitude, longitude)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    userId,
-    input.label,
-    input.address,
-    input.area || null,
-    input.landmark || null,
-    input.phone || null,
-    input.latitude ?? null,
-    input.longitude ?? null,
-  );
-  return get<Address>("SELECT * FROM addresses WHERE id = ?", Number(result.lastInsertRowid))!;
+export async function createAddress(userId: number, input: AddressInput): Promise<Address> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("addresses")
+    .insert({
+      user_id: userId,
+      label: input.label,
+      address: input.address,
+      area: input.area || null,
+      landmark: input.landmark || null,
+      phone: input.phone || null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Address;
 }
 
-export function updateAddress(id: number, userId: number, input: AddressInput): Address {
-  const existing = getAddress(id, userId);
-  if (!existing) throw notFound();
-  run(
-    `UPDATE addresses
-     SET label = ?, address = ?, area = ?, landmark = ?, phone = ?, latitude = ?, longitude = ?, updated_at = ?
-     WHERE id = ? AND user_id = ?`,
-    input.label,
-    input.address,
-    input.area || null,
-    input.landmark || null,
-    input.phone || null,
-    input.latitude ?? null,
-    input.longitude ?? null,
-    now(),
-    id,
-    userId,
-  );
-  return getAddress(id, userId)!;
+export async function updateAddress(
+  id: number,
+  userId: number,
+  input: AddressInput,
+): Promise<Address> {
+  const supabase = await supabaseServer();
+  if (!(await getAddress(id, userId))) throw notFound();
+  const { data, error } = await supabase
+    .from("addresses")
+    .update({
+      label: input.label,
+      address: input.address,
+      area: input.area || null,
+      landmark: input.landmark || null,
+      phone: input.phone || null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Address;
 }
 
 /**
  * Addresses are soft-deleted: existing orders keep a foreign key to them, so the
  * row must stay while disappearing from the customer's address book.
  */
-export function deleteAddress(id: number, userId: number): void {
-  const existing = getAddress(id, userId);
-  if (!existing) throw notFound();
-  run("UPDATE addresses SET is_deleted = 1, updated_at = ? WHERE id = ? AND user_id = ?", now(), id, userId);
+export async function deleteAddress(id: number, userId: number): Promise<void> {
+  const supabase = await supabaseServer();
+  if (!(await getAddress(id, userId))) throw notFound();
+  const { error } = await supabase
+    .from("addresses")
+    .update({ is_deleted: true, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
 }
 
 // --- Laundry shops (FR-026) --------------------------------------------------
 
-export function listShops(activeOnly = false): LaundryShop[] {
-  return activeOnly
-    ? all<LaundryShop>("SELECT * FROM laundry_shops WHERE is_active = 1 ORDER BY name")
-    : all<LaundryShop>("SELECT * FROM laundry_shops ORDER BY is_active DESC, name");
+export async function listShops(activeOnly = false): Promise<LaundryShop[]> {
+  const supabase = await supabaseServer();
+  const query = supabase.from("laundry_shops").select("*");
+  const { data, error } = activeOnly
+    ? await query.eq("is_active", true).order("name")
+    : await query.order("is_active", { ascending: false }).order("name");
+  if (error) throw error;
+  return (data ?? []) as LaundryShop[];
 }
 
-export function getShop(id: number): LaundryShop | undefined {
-  return get<LaundryShop>("SELECT * FROM laundry_shops WHERE id = ?", id);
+export async function getShop(id: number): Promise<LaundryShop | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase.from("laundry_shops").select("*").eq("id", id).maybeSingle();
+  return (data as LaundryShop | null) ?? undefined;
 }
 
 export interface ShopInput {
@@ -240,152 +346,177 @@ export interface ShopInput {
   is_active?: boolean;
 }
 
-export function createShop(input: ShopInput): LaundryShop {
-  const result = run(
-    "INSERT INTO laundry_shops (name, phone, address, latitude, longitude, is_active) VALUES (?, ?, ?, ?, ?, ?)",
-    input.name,
-    input.phone || null,
-    input.address || null,
-    input.latitude ?? null,
-    input.longitude ?? null,
-    input.is_active === false ? 0 : 1,
-  );
-  return getShop(Number(result.lastInsertRowid))!;
+export async function createShop(input: ShopInput): Promise<LaundryShop> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("laundry_shops")
+    .insert({
+      name: input.name,
+      phone: input.phone || null,
+      address: input.address || null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      is_active: input.is_active !== false,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as LaundryShop;
 }
 
-export function updateShop(id: number, input: ShopInput): LaundryShop {
-  if (!getShop(id)) throw notFound();
-  run(
-    `UPDATE laundry_shops
-     SET name = ?, phone = ?, address = ?, latitude = ?, longitude = ?, is_active = ?, updated_at = ?
-     WHERE id = ?`,
-    input.name,
-    input.phone || null,
-    input.address || null,
-    input.latitude ?? null,
-    input.longitude ?? null,
-    input.is_active === false ? 0 : 1,
-    now(),
-    id,
-  );
-  return getShop(id)!;
+export async function updateShop(id: number, input: ShopInput): Promise<LaundryShop> {
+  const supabase = await supabaseServer();
+  if (!(await getShop(id))) throw notFound();
+  const { data, error } = await supabase
+    .from("laundry_shops")
+    .update({
+      name: input.name,
+      phone: input.phone || null,
+      address: input.address || null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      is_active: input.is_active !== false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as LaundryShop;
 }
 
 // --- Pickup routes (FR-022) --------------------------------------------------
 
-export function listRoutes(agentId?: number, routeDate?: string): PickupRoute[] {
-  const where: string[] = [];
-  const params: unknown[] = [];
-  if (agentId) {
-    where.push("r.agent_id = ?");
-    params.push(agentId);
-  }
-  if (routeDate) {
-    where.push("r.route_date = ?");
-    params.push(routeDate);
-  }
-  const clause = where.length ? " WHERE " + where.join(" AND ") : "";
-  return all<PickupRoute>(
-    `SELECT r.*, u.name AS agent_name,
-            (SELECT COUNT(*) FROM route_orders ro WHERE ro.route_id = r.id) AS order_count
-     FROM pickup_routes r
-     JOIN users u ON u.id = r.agent_id` +
-      clause +
-      " ORDER BY r.route_date DESC, r.id DESC",
-    ...params,
-  );
+export async function listRoutes(agentId?: number, routeDate?: string): Promise<PickupRoute[]> {
+  const supabase = await supabaseServer();
+  let query = supabase.from("route_summary").select("*");
+  if (agentId) query = query.eq("agent_id", agentId);
+  if (routeDate) query = query.eq("route_date", routeDate);
+  const { data, error } = await query
+    .order("route_date", { ascending: false })
+    .order("id", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as PickupRoute[];
 }
 
-export function getRoute(id: number): PickupRoute | undefined {
-  return get<PickupRoute>(
-    `SELECT r.*, u.name AS agent_name,
-            (SELECT COUNT(*) FROM route_orders ro WHERE ro.route_id = r.id) AS order_count
-     FROM pickup_routes r
-     JOIN users u ON u.id = r.agent_id
-     WHERE r.id = ?`,
-    id,
-  );
+export async function getRoute(id: number): Promise<PickupRoute | undefined> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase.from("route_summary").select("*").eq("id", id).maybeSingle();
+  return (data as PickupRoute | null) ?? undefined;
 }
 
-export function getRouteOrders(routeId: number): RouteOrder[] {
-  return all<RouteOrder>(
-    `SELECT ro.*, o.order_number, o.bag_count, o.status AS order_status,
-            c.name AS customer_name, a.address AS address_line
-     FROM route_orders ro
-     JOIN laundry_orders o ON o.id = ro.order_id
-     JOIN users c          ON c.id = o.customer_id
-     JOIN addresses a      ON a.id = o.pickup_address_id
-     WHERE ro.route_id = ?
-     ORDER BY ro.sequence`,
-    routeId,
-  );
+type RouteStopRow = {
+  id: number;
+  route_id: number;
+  order_id: number;
+  sequence: number;
+  status: string;
+  order: {
+    order_number: string;
+    bag_count: number;
+    status: string;
+    customer: { name: string } | null;
+    address: { address: string } | null;
+  } | null;
+};
+
+export async function getRouteOrders(routeId: number): Promise<RouteOrder[]> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase
+    .from("route_orders")
+    .select(
+      `id, route_id, order_id, sequence, status,
+       order:laundry_orders!route_orders_order_id_fkey (
+         order_number, bag_count, status,
+         customer:users!laundry_orders_customer_id_fkey ( name ),
+         address:addresses!laundry_orders_pickup_address_id_fkey ( address )
+       )`,
+    )
+    .eq("route_id", routeId)
+    .order("sequence");
+  if (error) throw error;
+
+  return ((data ?? []) as unknown as RouteStopRow[]).map((row) => ({
+    id: row.id,
+    route_id: row.route_id,
+    order_id: row.order_id,
+    sequence: row.sequence,
+    status: row.status,
+    order_number: row.order?.order_number ?? "",
+    bag_count: row.order?.bag_count ?? 0,
+    order_status: (row.order?.status ?? "PENDING") as RouteOrder["order_status"],
+    customer_name: row.order?.customer?.name ?? "",
+    address_line: row.order?.address?.address ?? "",
+  })) as RouteOrder[];
 }
 
 /**
- * FR-022: groups pending orders into one route for an agent. Each order in the
- * route also gets the agent assigned, so it appears on their pickup list.
+ * FR-022: groups pending orders into one route for an agent. The route and its
+ * stops are written by create_route() so they land together; each order then
+ * gets the agent assigned through the order service, which is what produces
+ * the status history row and the notification.
  */
-export function createRoute(
+export async function createRoute(
   input: { name?: string | null; agentId: number; routeDate: string; orderIds: number[] },
-  assign: (orderId: number, agentId: number) => void,
-): PickupRoute {
-  const agent = get<{ id: number }>(
-    "SELECT id FROM users WHERE id = ? AND role = 'PICKUP_AGENT' AND is_active = 1",
-    input.agentId,
-  );
-  if (!agent) throw badRequest("No pickup agent is currently available.");
+  assign: (orderId: number, agentId: number) => Promise<void>,
+): Promise<PickupRoute> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase.rpc("create_route", {
+    p_agent_id: input.agentId,
+    p_route_date: input.routeDate,
+    p_order_ids: input.orderIds,
+    p_name: input.name || null,
+  });
+  if (error) {
+    if (error.message.includes("AGENT_UNAVAILABLE")) {
+      throw badRequest("No pickup agent is currently available.");
+    }
+    throw error;
+  }
 
-  const routeId = db.transaction(() => {
-    const result = run(
-      "INSERT INTO pickup_routes (name, agent_id, route_date) VALUES (?, ?, ?)",
-      input.name || null,
-      input.agentId,
-      input.routeDate,
-    );
-    const id = Number(result.lastInsertRowid);
-    input.orderIds.forEach((orderId, index) => {
-      run(
-        "INSERT OR IGNORE INTO route_orders (route_id, order_id, sequence) VALUES (?, ?, ?)",
-        id,
-        orderId,
-        index + 1,
-      );
-    });
-    return id;
-  })();
-
-  // Assignment runs outside the insert transaction so each order also gets its
-  // status history row and notification through the normal order service.
-  for (const orderId of input.orderIds) assign(orderId, input.agentId);
-  return getRoute(routeId)!;
+  // Sequential, because the selection order is the order the agent drives.
+  for (const orderId of input.orderIds) await assign(orderId, input.agentId);
+  return (await getRoute(Number(data)))!;
 }
 
-export function updateRouteStatus(id: number, status: PickupRoute["status"]): PickupRoute {
-  if (!getRoute(id)) throw notFound();
-  run("UPDATE pickup_routes SET status = ?, updated_at = ? WHERE id = ?", status, now(), id);
-  return getRoute(id)!;
+export async function updateRouteStatus(
+  id: number,
+  status: PickupRoute["status"],
+): Promise<PickupRoute> {
+  const supabase = await supabaseServer();
+  if (!(await getRoute(id))) throw notFound();
+  const { error } = await supabase
+    .from("pickup_routes")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) throw error;
+  return (await getRoute(id))!;
 }
 
-export function deleteRoute(id: number): void {
-  if (!getRoute(id)) throw notFound();
-  run("DELETE FROM pickup_routes WHERE id = ?", id);
+export async function deleteRoute(id: number): Promise<void> {
+  const supabase = await supabaseServer();
+  if (!(await getRoute(id))) throw notFound();
+  const { error } = await supabase.from("pickup_routes").delete().eq("id", id);
+  if (error) throw error;
 }
 
 // --- Settings ----------------------------------------------------------------
 
-export function getSetting(key: string, fallback = ""): string {
-  return get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key)?.value ?? fallback;
+export async function getSetting(key: string, fallback = ""): Promise<string> {
+  const supabase = await supabaseServer();
+  const { data } = await supabase.from("settings").select("value").eq("key", key).maybeSingle();
+  return data?.value ?? fallback;
 }
 
-export function setSetting(key: string, value: string): void {
-  run(
-    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    key,
-    value,
-  );
+export async function setSetting(key: string, value: string): Promise<void> {
+  const supabase = await supabaseServer();
+  const { error } = await supabase.from("settings").upsert({ key, value }, { onConflict: "key" });
+  if (error) throw error;
 }
 
-export function allSettings(): Record<string, string> {
-  const rows = all<{ key: string; value: string }>("SELECT key, value FROM settings");
-  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+export async function allSettings(): Promise<Record<string, string>> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase.from("settings").select("key, value");
+  if (error) throw error;
+  return Object.fromEntries((data ?? []).map((r) => [r.key, r.value]));
 }

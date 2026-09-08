@@ -1,63 +1,98 @@
-import crypto from "node:crypto";
-import { cookies } from "next/headers";
-import { db, get, run } from "./db";
+import "server-only";
+import { supabaseServer } from "./supabase/server";
+import { phoneToAuthEmail } from "./supabase/env";
 import { forbidden, unauthorized } from "./errors";
-import type { Role, SessionUser, User } from "./types";
+import { normalisePhone } from "./validation";
+import type { Role, SessionUser } from "./types";
 
-export { hashPassword, verifyPassword } from "./password";
+/**
+ * Sign-in is by mobile number and password, which is what the SRS asks for and
+ * what a customer in Puttalam actually has. Supabase Auth is email-based, so
+ * each account carries a synthetic address derived from the phone
+ * (0771111111@quickwash.local). Nobody sees it and nothing is sent to it; the
+ * number remains the only credential anyone types.
+ */
 
-const SESSION_COOKIE = "laundry_session";
-const SESSION_DAYS = 30;
-
-export async function createSession(userId: number): Promise<void> {
-  const id = crypto.randomBytes(32).toString("hex");
-  const expires = new Date(Date.now() + SESSION_DAYS * 86_400_000);
-  run("INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)", id, userId, expires.toISOString());
-
-  const jar = await cookies();
-  jar.set(SESSION_COOKIE, id, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    expires,
+/** FR-002. Returns null when the number and password do not match. */
+export async function signIn(phone: string, password: string): Promise<SessionUser | null> {
+  const supabase = await supabaseServer();
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: phoneToAuthEmail(normalisePhone(phone)),
+    password,
   });
+  if (error || !data.user) return null;
+  return getSessionUser();
 }
 
-export async function destroySession(): Promise<void> {
-  const jar = await cookies();
-  const id = jar.get(SESSION_COOKIE)?.value;
-  if (id) run("DELETE FROM sessions WHERE id = ?", id);
-  jar.delete(SESSION_COOKIE);
-}
+/**
+ * FR-001: customer self-signup, on the anon key.
+ *
+ * The handle_new_user trigger makes the public.users row and always makes it a
+ * CUSTOMER - the metadata here cannot ask for anything else. Staff accounts go
+ * through createUser() in repos.ts, which needs the service role.
+ */
+export async function signUpCustomer(input: {
+  name: string;
+  phone: string;
+  email?: string | null;
+  password: string;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await supabaseServer();
+  const phone = normalisePhone(input.phone);
 
-/** The signed-in user, or null. Safe to call from pages and route handlers. */
-export async function getSessionUser(): Promise<SessionUser | null> {
-  const jar = await cookies();
-  const id = jar.get(SESSION_COOKIE)?.value;
-  if (!id) return null;
+  const { error } = await supabase.auth.signUp({
+    email: phoneToAuthEmail(phone),
+    password: input.password,
+    options: { data: { name: input.name, phone, contact_email: input.email || "" } },
+  });
 
-  const row = get<User & { expires_at: string }>(
-    `SELECT u.*, s.expires_at FROM sessions s
-     JOIN users u ON u.id = s.user_id
-     WHERE s.id = ?`,
-    id,
-  );
-  if (!row) return null;
-
-  if (new Date(row.expires_at).getTime() < Date.now()) {
-    run("DELETE FROM sessions WHERE id = ?", id);
-    return null;
+  if (error) {
+    const already = /already|registered|exists/i.test(error.message);
+    return {
+      ok: false,
+      error: already
+        ? "An account with this mobile number already exists."
+        : error.message,
+    };
   }
-  if (!row.is_active) return null;
+  return { ok: true };
+}
+
+export async function signOut(): Promise<void> {
+  const supabase = await supabaseServer();
+  await supabase.auth.signOut();
+}
+
+/**
+ * The signed-in user, or null.
+ *
+ * getUser() revalidates the token with Supabase rather than trusting the
+ * cookie, so this is safe to gate pages on. The role lives on the users row,
+ * not in the JWT, which keeps a stale token from carrying a stale role.
+ */
+export async function getSessionUser(): Promise<SessionUser | null> {
+  const supabase = await supabaseServer();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data } = await supabase
+    .from("users")
+    .select("id, name, phone, email, role, shop_id, is_active")
+    .eq("auth_id", user.id)
+    .maybeSingle();
+
+  if (!data || !data.is_active) return null;
 
   return {
-    id: row.id,
-    name: row.name,
-    phone: row.phone,
-    email: row.email,
-    role: row.role,
-    shop_id: row.shop_id,
+    id: data.id,
+    name: data.name,
+    phone: data.phone,
+    email: data.email,
+    role: data.role as Role,
+    shop_id: data.shop_id,
   };
 }
 
@@ -67,10 +102,6 @@ export async function requireUser(...roles: Role[]): Promise<SessionUser> {
   if (!user) throw unauthorized();
   if (roles.length && !roles.includes(user.role)) throw forbidden();
   return user;
-}
-
-export function purgeExpiredSessions(): void {
-  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(new Date().toISOString());
 }
 
 /** Where each role lands after signing in (SRS section 13). */

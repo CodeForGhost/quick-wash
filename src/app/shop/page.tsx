@@ -10,11 +10,11 @@ export const metadata = { title: "Counter · QuickWash" };
 export default async function ShopDashboard() {
   const user = await requireRole("SHOP_STAFF");
   const shopId = user.shop_id ?? undefined;
-  const counts = statusCounts();
+  const counts = await statusCounts();
 
-  const incoming = listOrders({ shopId, statuses: ["PICKED_UP"] });
-  const processing = listOrders({ shopId, statuses: ["AT_LAUNDRY", "WASHING", "DRYING", "IRONING"] });
-  const ready = listOrders({ shopId, statuses: ["READY"] });
+  const incoming = await listOrders({ shopId, statuses: ["PICKED_UP"] });
+  const processing = await listOrders({ shopId, statuses: ["AT_LAUNDRY", "WASHING", "DRYING", "IRONING"] });
+  const ready = await listOrders({ shopId, statuses: ["READY"] });
 
   return (
     <>

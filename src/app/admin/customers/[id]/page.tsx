@@ -13,11 +13,11 @@ export default async function AdminCustomerPage({ params }: { params: Promise<{ 
   await requireRole("ADMIN");
   const { id } = await params;
 
-  const customer = getUser(Number(id));
+  const customer = await getUser(Number(id));
   if (!customer || customer.role !== "CUSTOMER") notFound();
 
-  const orders = listOrders({ customerId: customer.id });
-  const addresses = listAddresses(customer.id);
+  const orders = await listOrders({ customerId: customer.id });
+  const addresses = await listAddresses(customer.id);
   const delivered = orders.filter((order) => order.status === "DELIVERED");
   const spend = delivered.reduce((total, order) => total + (order.price ?? 0), 0);
 

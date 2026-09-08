@@ -7,7 +7,7 @@ import { listCustomers, listRoutes } from "@/lib/repos";
 
 export const metadata = { title: "Reports · QuickWash" };
 
-/** Hours between two SQLite timestamps, or null when either is missing. */
+/** Hours between two stored timestamps, or null when either is missing. */
 function hoursBetween(from: string | null, to: string | null): number | null {
   if (!from || !to) return null;
   const start = new Date(from.replace(" ", "T") + "Z").getTime();
@@ -35,11 +35,11 @@ function hours(value: number | null): string {
 export default async function AdminReportsPage() {
   await requireRole("ADMIN");
 
-  const orders = listOrders({ limit: 1000 });
+  const orders = await listOrders({ limit: 1000 });
   const delivered = orders.filter((order) => order.status === "DELIVERED");
   const cancelled = orders.filter((order) => order.status === "CANCELLED");
-  const customers = listCustomers();
-  const routes = listRoutes();
+  const customers = await listCustomers();
+  const routes = await listRoutes();
 
   const repeatCustomers = customers.filter((customer) => customer.order_count > 1);
   const repeatRate = customers.length ? (repeatCustomers.length / customers.length) * 100 : 0;
@@ -77,7 +77,7 @@ export default async function AdminReportsPage() {
 
       <Card className="mb-8 p-5">
         <SectionHeading eyebrow="FR-023" title="Orders by stage" />
-        <PipelineLoad counts={statusCounts()} />
+        <PipelineLoad counts={await statusCounts()} />
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">

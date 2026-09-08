@@ -20,12 +20,12 @@ export default async function AdminOrdersPage({ searchParams }: Props) {
       ? ("CANCELLED" as OrderStatus)
       : undefined;
 
-  const orders = listOrders({
+  const orders = await listOrders({
     statuses: status ? [status] : undefined,
     search: filters.q || undefined,
     pickupDate: filters.date || undefined,
   });
-  const counts = statusCounts();
+  const counts = await statusCounts();
 
   return (
     <>

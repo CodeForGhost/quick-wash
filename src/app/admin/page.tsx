@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireRole } from "@/components/app-shell";
 import { PipelineLoad } from "@/components/pipeline-rail";
 import { Card, EmptyState, Figure, PageTitle, SectionHeading, StatusPill } from "@/components/patterns";
-import { today } from "@/lib/db";
+import { today } from "@/lib/format";
 import { formatDate, formatPrice } from "@/lib/format";
 import { listOrders, statusCounts } from "@/lib/orders";
 import { listAgentsWithWorkload } from "@/lib/repos";
@@ -14,19 +14,19 @@ export default async function AdminDashboard() {
   await requireRole("ADMIN");
 
   const todayStr = today();
-  const counts = statusCounts();
-  const todayCounts = statusCounts(todayStr);
-  const agents = listAgentsWithWorkload();
+  const counts = await statusCounts();
+  const todayCounts = await statusCounts(todayStr);
+  const agents = await listAgentsWithWorkload();
 
-  const unassigned = listOrders({ statuses: ["PENDING"] });
-  const readyForDelivery = listOrders({ statuses: ["READY"] });
-  const todayOrders = listOrders({ pickupDate: todayStr });
+  const unassigned = await listOrders({ statuses: ["PENDING"] });
+  const readyForDelivery = await listOrders({ statuses: ["READY"] });
+  const todayOrders = await listOrders({ pickupDate: todayStr });
 
   const active = Object.entries(counts)
     .filter(([status]) => status !== "DELIVERED" && status !== "CANCELLED")
     .reduce((total, [, count]) => total + count, 0);
 
-  const billed = listOrders({ statuses: ["DELIVERED"] }).reduce(
+  const billed = (await listOrders({ statuses: ["DELIVERED"] })).reduce(
     (total, order) => total + (order.price ?? 0),
     0,
   );

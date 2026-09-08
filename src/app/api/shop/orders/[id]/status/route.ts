@@ -10,5 +10,5 @@ export const PATCH = handle(async (request: Request, { params }: Params) => {
   const user = await requireUser("SHOP_STAFF", "ADMIN");
   const { id } = await params;
   const input = shopStatusSchema.parse(await readJson(request));
-  return ok(transitionOrder(Number(id), input.status, user, { notes: input.notes || null }));
+  return ok(await transitionOrder(Number(id), input.status, user, { notes: input.notes || null }));
 });

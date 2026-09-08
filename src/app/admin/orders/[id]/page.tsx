@@ -16,10 +16,10 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
   await requireRole("ADMIN");
   const { id } = await params;
 
-  const order = getOrder(Number(id));
+  const order = await getOrder(Number(id));
   if (!order) notFound();
 
-  const agents = listAgentsWithWorkload().filter((agent) => agent.is_active);
+  const agents = (await listAgentsWithWorkload()).filter((agent) => agent.is_active);
 
   // FR-007 / FR-016: pickup assignment before collection, delivery once ready.
   const assignable =
@@ -118,7 +118,7 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
 
         <Card className="h-fit p-5">
           <SectionHeading eyebrow="FR-020" title="Status history" />
-          <StatusTrail entries={getStatusHistory(order.id)} />
+          <StatusTrail entries={await getStatusHistory(order.id)} />
         </Card>
       </div>
     </>

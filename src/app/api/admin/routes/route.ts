@@ -8,13 +8,13 @@ import { routeSchema } from "@/lib/validation";
 export const GET = handle(async (request: Request) => {
   await requireUser("ADMIN");
   const { searchParams } = new URL(request.url);
-  return ok(listRoutes(undefined, searchParams.get("date") ?? undefined));
+  return ok(await listRoutes(undefined, searchParams.get("date") ?? undefined));
 });
 
 export const POST = handle(async (request: Request) => {
   const admin = await requireUser("ADMIN");
   const input = routeSchema.parse(await readJson(request));
-  const route = createRoute(
+  const route = await createRoute(
     {
       name: input.name || null,
       agentId: input.agent_id,
@@ -23,8 +23,8 @@ export const POST = handle(async (request: Request) => {
     },
     // Each order on the route is assigned through the order service, so it
     // still gets its status history row and notification.
-    (orderId, agentId) => {
-      assignPickupAgent(orderId, agentId, admin);
+    async (orderId, agentId) => {
+      await assignPickupAgent(orderId, agentId, admin);
     },
   );
   return ok(route, 201);

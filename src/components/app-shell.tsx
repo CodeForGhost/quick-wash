@@ -57,7 +57,7 @@ export async function AppShell({
 
   return (
     <div className="min-h-dvh">
-      <TopBar user={user} items={items} unread={unreadCount(user.id)} />
+      <TopBar user={user} items={items} unread={await unreadCount(user.id)} />
       <main className={showTabs ? "mx-auto max-w-6xl px-4 py-6 pb-28 md:pb-10" : "mx-auto max-w-6xl px-4 py-6 pb-10"}>
         {children}
       </main>

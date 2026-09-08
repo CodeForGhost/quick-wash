@@ -45,12 +45,14 @@ export const TIME_SLOTS = [
 
 export interface User {
   id: number;
+  /** The Supabase Auth account behind this person. Null only mid-migration. */
+  auth_id: string | null;
   name: string;
   phone: string;
   email: string | null;
   role: Role;
   shop_id: number | null;
-  is_active: number;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -65,7 +67,7 @@ export interface Address {
   latitude: number | null;
   longitude: number | null;
   phone: string | null;
-  is_deleted: number;
+  is_deleted: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -77,7 +79,7 @@ export interface LaundryShop {
   address: string | null;
   latitude: number | null;
   longitude: number | null;
-  is_active: number;
+  is_active: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -164,7 +166,7 @@ export interface Notification {
   event: string;
   title: string;
   body: string;
-  is_read: number;
+  is_read: boolean;
   created_at: string;
 }
 

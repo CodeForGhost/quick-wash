@@ -9,7 +9,7 @@ export const metadata = { title: "My orders · QuickWash" };
 /** SRS 13.1 screen 9: order history. */
 export default async function CustomerOrdersPage() {
   const user = await requireRole("CUSTOMER");
-  const orders = listOrders({ customerId: user.id });
+  const orders = await listOrders({ customerId: user.id });
 
   const active = orders.filter((order) => order.status !== "DELIVERED" && order.status !== "CANCELLED");
   const finished = orders.filter((order) => order.status === "DELIVERED" || order.status === "CANCELLED");

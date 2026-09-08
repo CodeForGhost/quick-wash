@@ -15,7 +15,7 @@ export default async function ShopOrderPage({ params }: { params: Promise<{ id: 
   const user = await requireRole("SHOP_STAFF");
   const { id } = await params;
 
-  const order = getOrder(Number(id));
+  const order = await getOrder(Number(id));
   if (!order) notFound();
   assertCanView(user, order);
 
@@ -89,7 +89,7 @@ export default async function ShopOrderPage({ params }: { params: Promise<{ id: 
 
           <Card className="p-5">
             <SectionHeading eyebrow="FR-020" title="Status history" />
-            <StatusTrail entries={getStatusHistory(order.id)} />
+            <StatusTrail entries={await getStatusHistory(order.id)} />
           </Card>
         </div>
       </div>

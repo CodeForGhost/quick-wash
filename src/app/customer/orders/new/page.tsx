@@ -8,7 +8,7 @@ export const metadata = { title: "Request a pickup · QuickWash" };
 /** SRS 13.1 screens 4-6: create pickup, choose address, confirm. */
 export default async function NewOrderPage() {
   const user = await requireRole("CUSTOMER");
-  const addresses = listAddresses(user.id);
+  const addresses = await listAddresses(user.id);
 
   return (
     <>

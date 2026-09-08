@@ -15,7 +15,7 @@ export default async function AdminShopsPage() {
         title="Laundry shops"
         subtitle="New orders go to the first active shop. Keep one active while you are validating the service."
       />
-      <ShopManager shops={listShops()} />
+      <ShopManager shops={await listShops()} />
     </>
   );
 }

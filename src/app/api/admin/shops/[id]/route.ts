@@ -9,5 +9,5 @@ export const PUT = handle(async (request: Request, { params }: Params) => {
   await requireUser("ADMIN");
   const { id } = await params;
   const input = shopSchema.parse(await readJson(request));
-  return ok(updateShop(Number(id), input));
+  return ok(await updateShop(Number(id), input));
 });

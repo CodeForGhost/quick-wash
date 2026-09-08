@@ -10,11 +10,11 @@ export const GET = handle(async (request: Request) => {
   const status = searchParams.get("status");
 
   return ok({
-    orders: listOrders({
+    orders: await listOrders({
       statuses: status ? [statusFilterSchema.parse(status)] : undefined,
       pickupDate: searchParams.get("date") ?? undefined,
       search: searchParams.get("q") ?? undefined,
     }),
-    counts: statusCounts(),
+    counts: await statusCounts(),
   });
 });

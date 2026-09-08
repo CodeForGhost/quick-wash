@@ -3,14 +3,14 @@ import { requireRole } from "@/components/app-shell";
 import { Card, EmptyState, Figure, PageTitle, SectionHeading, StatusPill } from "@/components/patterns";
 import { formatDate, relativeDay } from "@/lib/format";
 import { listOrders } from "@/lib/orders";
-import { today } from "@/lib/db";
+import { today } from "@/lib/format";
 
 export const metadata = { title: "Today's pickups · QuickWash" };
 
 /** FR-008: the agent's pickup dashboard, grouped by day. */
 export default async function AgentDashboard() {
   const user = await requireRole("PICKUP_AGENT");
-  const orders = listOrders({
+  const orders = await listOrders({
     pickupAgentId: user.id,
     statuses: ["PICKUP_ASSIGNED", "PICKED_UP"],
   });

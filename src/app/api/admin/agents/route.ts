@@ -6,13 +6,13 @@ import { createAgentSchema } from "@/lib/validation";
 /** FR-025: agent management, including current workload. */
 export const GET = handle(async () => {
   await requireUser("ADMIN");
-  return ok(listAgentsWithWorkload());
+  return ok(await listAgentsWithWorkload());
 });
 
 export const POST = handle(async (request: Request) => {
   await requireUser("ADMIN");
   const input = createAgentSchema.parse(await readJson(request));
-  const user = createUser({
+  const user = await createUser({
     name: input.name,
     phone: input.phone,
     email: input.email || null,

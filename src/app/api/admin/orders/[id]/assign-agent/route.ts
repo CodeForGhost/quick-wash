@@ -13,8 +13,8 @@ export const POST = handle(async (request: Request, { params }: Params) => {
 
   const order =
     input.type === "delivery"
-      ? assignDeliveryAgent(Number(id), input.agent_id, admin)
-      : assignPickupAgent(Number(id), input.agent_id, admin);
+      ? await assignDeliveryAgent(Number(id), input.agent_id, admin)
+      : await assignPickupAgent(Number(id), input.agent_id, admin);
 
   return ok(order);
 });

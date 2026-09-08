@@ -1,30 +1,137 @@
 /**
- * Seeds the SQLite database with a laundry shop, staff, agents and a set of
+ * Seeds the Supabase project with a laundry shop, staff, agents and a set of
  * customers whose orders sit at every stage of the pipeline, so each dashboard
  * has something to show on first run.
  *
  *   npm run db:seed
+ *
+ * It does not shortcut row level security. Accounts are created with the
+ * service role, because only that may set a role; everything after that is
+ * done signed in as the person who would really do it, so the seed exercises
+ * the same policies and functions the app does.
  */
-import { db, run, today } from "../src/lib/db";
-import { createOrder, transitionOrder, assignPickupAgent, assignDeliveryAgent, setPrice } from "../src/lib/orders";
-import { createAddress, createShop, createUser, setSetting } from "../src/lib/repos";
-import type { OrderStatus, SessionUser } from "../src/lib/types";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { EVENTS, type NotificationEvent } from "../src/lib/notification-events";
+import type { LaundryOrder } from "../src/lib/types";
 
-const PASSWORD = "password123";
+const URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-function asSession(user: { id: number; name: string; phone: string; email: string | null; role: string; shop_id: number | null }): SessionUser {
-  return {
-    id: user.id,
-    name: user.name,
-    phone: user.phone,
-    email: user.email,
-    role: user.role as SessionUser["role"],
-    shop_id: user.shop_id,
-  };
+if (!URL || !ANON || !SERVICE) {
+  console.error(
+    "Missing configuration. NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY\n" +
+      "and SUPABASE_SERVICE_ROLE_KEY must all be set in .env.local.",
+  );
+  process.exit(1);
 }
 
-function wipe() {
-  // Order matters only for readability; foreign keys cascade from the parents.
+const PASSWORD = "password123";
+const DOMAIN = "quickwash.local";
+const authEmail = (phone: string) => `${phone}@${DOMAIN}`;
+
+const admin = createClient(URL, SERVICE, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
+
+/** A client signed in as one person, so RLS and the RPCs see a real caller. */
+const clients = new Map<string, SupabaseClient>();
+async function as(phone: string): Promise<SupabaseClient> {
+  const cached = clients.get(phone);
+  if (cached) return cached;
+
+  const client = createClient(URL!, ANON!, {
+    auth: { autoRefreshToken: false, persistSession: false },
+  });
+  const { error } = await client.auth.signInWithPassword({
+    email: authEmail(phone),
+    password: PASSWORD,
+  });
+  if (error) throw new Error(`could not sign in as ${phone}: ${error.message}`);
+  clients.set(phone, client);
+  return client;
+}
+
+interface Person {
+  id: number;
+  name: string;
+  phone: string;
+}
+
+/** Creates the auth account and promotes the row to its real role. */
+async function makeUser(input: {
+  name: string;
+  phone: string;
+  email?: string;
+  role: "CUSTOMER" | "PICKUP_AGENT" | "SHOP_STAFF" | "ADMIN";
+  shopId?: number | null;
+}): Promise<Person> {
+  const { data, error } = await admin.auth.admin.createUser({
+    email: authEmail(input.phone),
+    password: PASSWORD,
+    email_confirm: true,
+    user_metadata: {
+      name: input.name,
+      phone: input.phone,
+      contact_email: input.email ?? "",
+    },
+  });
+  if (error || !data.user) throw new Error(`${input.phone}: ${error?.message}`);
+
+  const { data: row, error: promote } = await admin
+    .from("users")
+    .update({ role: input.role, shop_id: input.shopId ?? null, email: input.email ?? null })
+    .eq("auth_id", data.user.id)
+    .select("id, name, phone")
+    .single();
+  if (promote) throw new Error(`${input.phone}: ${promote.message}`);
+  return row as Person;
+}
+
+/**
+ * The same SRS section 19 fan-out the app performs, raised by the seeder so the
+ * updates screen has something on it. notify_users() is security definer, so
+ * the caller only has to be signed in.
+ */
+async function notify(
+  client: SupabaseClient,
+  event: NotificationEvent,
+  order: LaundryOrder,
+  shopStaffIds: number[],
+): Promise<void> {
+  const spec = EVENTS[event];
+  const ids = new Set<number>();
+  for (const audience of spec.to) {
+    if (audience === "customer") ids.add(order.customer_id);
+    if (audience === "pickup_agent" && order.pickup_agent_id) ids.add(order.pickup_agent_id);
+    if (audience === "delivery_agent" && order.delivery_agent_id) ids.add(order.delivery_agent_id);
+    if (audience === "shop") for (const id of shopStaffIds) ids.add(id);
+  }
+  if (!ids.size) return;
+
+  const { error } = await client.rpc("notify_users", {
+    p_user_ids: [...ids],
+    p_order_id: order.id,
+    p_event: event,
+    p_title: spec.title,
+    p_body: spec.body(order),
+  });
+  if (error) throw new Error(`notify ${event} on order ${order.id}: ${error.message}`);
+}
+
+/** The event each status raises, from src/lib/orders.ts. */
+const EVENT_FOR_STATUS: Partial<Record<Status, NotificationEvent>> = {
+  PICKUP_ASSIGNED: "AGENT_ASSIGNED",
+  PICKED_UP: "PICKED_UP",
+  AT_LAUNDRY: "RECEIVED",
+  WASHING: "PROCESSING_STARTED",
+  READY: "READY",
+  OUT_FOR_DELIVERY: "DELIVERY_ASSIGNED",
+  DELIVERED: "DELIVERED",
+};
+
+async function wipe(): Promise<void> {
+  // FK order. The service role bypasses RLS, which is the point of using it.
   for (const table of [
     "route_orders",
     "pickup_routes",
@@ -32,15 +139,21 @@ function wipe() {
     "order_status_history",
     "laundry_orders",
     "addresses",
-    "sessions",
     "users",
     "laundry_shops",
     "order_counters",
     "settings",
   ]) {
-    run("DELETE FROM " + table);
+    const key = table === "settings" ? "key" : table === "order_counters" ? "year" : "id";
+    const { error } = await admin.from(table).delete().not(key, "is", null);
+    if (error) throw new Error(`clearing ${table}: ${error.message}`);
   }
-  run("DELETE FROM sqlite_sequence");
+
+  // Every demo account, so re-seeding does not collide on the email.
+  const { data } = await admin.auth.admin.listUsers({ perPage: 1000 });
+  for (const user of data?.users ?? []) {
+    if (user.email?.endsWith(`@${DOMAIN}`)) await admin.auth.admin.deleteUser(user.id);
+  }
 }
 
 function dateOffset(days: number): string {
@@ -48,55 +161,58 @@ function dateOffset(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-function main() {
+const today = () => dateOffset(0);
+
+type Status =
+  | "PENDING"
+  | "PICKUP_ASSIGNED"
+  | "PICKED_UP"
+  | "AT_LAUNDRY"
+  | "WASHING"
+  | "DRYING"
+  | "IRONING"
+  | "READY"
+  | "OUT_FOR_DELIVERY"
+  | "DELIVERED";
+
+async function main(): Promise<void> {
   console.log("Seeding QuickWash database...");
-  db.pragma("foreign_keys = OFF");
-  wipe();
-  db.pragma("foreign_keys = ON");
+  await wipe();
 
-  const shop = createShop({
-    name: "Puttalam Central Laundry",
-    phone: "0322265100",
-    address: "No. 12, Kurunegala Road, Puttalam",
-    latitude: 8.0362,
-    longitude: 79.8283,
-  });
+  const { data: shopRow, error: shopError } = await admin
+    .from("laundry_shops")
+    .insert({
+      name: "Puttalam Central Laundry",
+      phone: "0322265100",
+      address: "No. 12, Kurunegala Road, Puttalam",
+      latitude: 8.0362,
+      longitude: 79.8283,
+    })
+    .select("id, name")
+    .single();
+  if (shopError) throw shopError;
+  const shop = shopRow as { id: number; name: string };
 
-  const admin = createUser({
+  const adminUser = await makeUser({
     name: "System Administrator",
     phone: "0770000001",
-    email: "admin@puttalamlaundry.lk",
-    password: PASSWORD,
+    email: "admin@quickwash.lk",
     role: "ADMIN",
   });
-
-  const staff = createUser({
+  const staff = await makeUser({
     name: "Nuwan Perera",
     phone: "0770000002",
-    email: "shop@puttalamlaundry.lk",
-    password: PASSWORD,
+    email: "shop@quickwash.lk",
     role: "SHOP_STAFF",
     shopId: shop.id,
   });
-
-  const kamal = createUser({
-    name: "Kamal Silva",
-    phone: "0770000003",
-    password: PASSWORD,
-    role: "PICKUP_AGENT",
-  });
-
-  const rizwan = createUser({
+  const kamal = await makeUser({ name: "Kamal Silva", phone: "0770000003", role: "PICKUP_AGENT" });
+  const rizwan = await makeUser({
     name: "Rizwan Mohamed",
     phone: "0770000004",
-    password: PASSWORD,
     role: "PICKUP_AGENT",
   });
-
-  const adminSession = asSession(admin);
-  const staffSession = asSession(staff);
-  const kamalSession = asSession(kamal);
-  const rizwanSession = asSession(rizwan);
+  void adminUser;
 
   const customerSeeds = [
     { name: "Ahmed Nazeer", phone: "0771111111", area: "Puttalam Town", address: "No. 25, Main Street, Puttalam", landmark: "Near Zahira College" },
@@ -106,26 +222,39 @@ function main() {
     { name: "Imran Hassan", phone: "0775555555", area: "Thillayadi", address: "No. 3, Lagoon View, Thillayadi", landmark: "Near the jetty" },
   ];
 
-  const customers = customerSeeds.map((seed) => {
-    const user = createUser({
-      name: seed.name,
-      phone: seed.phone,
-      password: PASSWORD,
-      role: "CUSTOMER",
-    });
-    const address = createAddress(user.id, {
-      label: "Home",
-      address: seed.address,
-      area: seed.area,
-      landmark: seed.landmark,
-      phone: seed.phone,
-    });
-    return { user, address, session: asSession(user) };
-  });
+  const customers: Array<Person & { addressId: number }> = [];
+  for (const seed of customerSeeds) {
+    const person = await makeUser({ name: seed.name, phone: seed.phone, role: "CUSTOMER" });
+    // Signed in as the customer: RLS only lets you write your own address book.
+    const client = await as(seed.phone);
+    const { data, error } = await client
+      .from("addresses")
+      .insert({
+        user_id: person.id,
+        label: "Home",
+        address: seed.address,
+        area: seed.area,
+        landmark: seed.landmark,
+        phone: seed.phone,
+      })
+      .select("id")
+      .single();
+    if (error) throw new Error(`address for ${seed.phone}: ${error.message}`);
+    customers.push({ ...person, addressId: (data as { id: number }).id });
+  }
 
   // Each entry drives one order up to the given status, so every dashboard has
   // work waiting on it.
-  const plan: Array<{ customer: number; bags: number; items: number; upTo: OrderStatus; date: string; slot: string; price?: number; notes?: string }> = [
+  const plan: Array<{
+    customer: number;
+    bags: number;
+    items: number;
+    upTo: Status;
+    date: string;
+    slot: string;
+    price?: number;
+    notes?: string;
+  }> = [
     { customer: 0, bags: 2, items: 15, upTo: "PENDING", date: today(), slot: "08:00 AM - 10:00 AM", notes: "Please handle white clothes separately." },
     { customer: 1, bags: 1, items: 8, upTo: "PENDING", date: today(), slot: "10:00 AM - 12:00 PM" },
     { customer: 2, bags: 3, items: 22, upTo: "PICKUP_ASSIGNED", date: today(), slot: "10:00 AM - 12:00 PM" },
@@ -141,8 +270,7 @@ function main() {
     { customer: 2, bags: 3, items: 24, upTo: "DELIVERED", date: dateOffset(-12), slot: "08:00 AM - 10:00 AM", price: 1500 },
   ];
 
-  // The pipeline order each plan entry walks through.
-  const pipeline: OrderStatus[] = [
+  const pipeline: Status[] = [
     "PICKUP_ASSIGNED",
     "PICKED_UP",
     "AT_LAUNDRY",
@@ -154,51 +282,110 @@ function main() {
     "DELIVERED",
   ];
 
+  const adminClient = await as("0770000001");
+  const staffClient = await as(staff.phone);
+  const shopStaffIds = [staff.id];
+
   let created = 0;
   for (const [index, entry] of plan.entries()) {
     const customer = customers[entry.customer];
     const agent = index % 2 === 0 ? kamal : rizwan;
-    const agentSession = index % 2 === 0 ? kamalSession : rizwanSession;
+    const agentClient = await as(agent.phone);
+    const customerClient = await as(customer.phone);
 
-    const order = createOrder(
-      {
-        customerId: customer.user.id,
-        addressId: customer.address.id,
-        pickupDate: entry.date,
-        pickupTimeSlot: entry.slot,
-        bagCount: entry.bags,
-        itemCount: entry.items,
-        notes: entry.notes ?? null,
-        allowPastDate: true,
-      },
-      customer.user.id,
-    );
+    const { data: orderId, error } = await customerClient.rpc("create_order", {
+      p_address_id: customer.addressId,
+      p_pickup_date: entry.date,
+      p_pickup_time_slot: entry.slot,
+      p_bag_count: entry.bags,
+      p_item_count: entry.items,
+      p_notes: entry.notes ?? null,
+      p_customer_id: customer.id,
+    });
+    if (error) throw new Error(`order for ${customer.phone}: ${error.message}`);
+    const id = Number(orderId);
     created += 1;
+
+    const load = async (): Promise<LaundryOrder> => {
+      const { data } = await adminClient.from("laundry_orders").select("*").eq("id", id).single();
+      return data as LaundryOrder;
+    };
+    await notify(customerClient, "NEW_ORDER", await load(), shopStaffIds);
 
     const target = pipeline.indexOf(entry.upTo);
     for (let step = 0; step <= target; step += 1) {
       const status = pipeline[step];
+      const fail = (e: { message: string } | null, what: string) => {
+        if (e) throw new Error(`${what} on order ${id}: ${e.message}`);
+      };
+
       if (status === "PICKUP_ASSIGNED") {
-        assignPickupAgent(order.id, agent.id, adminSession);
+        fail(
+          (await adminClient.rpc("assign_agent", { p_order_id: id, p_agent_id: agent.id, p_delivery: false })).error,
+          "assign pickup",
+        );
+        fail(
+          (await adminClient.rpc("transition_order", { p_order_id: id, p_to: "PICKUP_ASSIGNED", p_notes: "Pickup agent assigned" })).error,
+          "PICKUP_ASSIGNED",
+        );
       } else if (status === "OUT_FOR_DELIVERY") {
-        assignDeliveryAgent(order.id, agent.id, adminSession);
+        fail(
+          (await adminClient.rpc("assign_agent", { p_order_id: id, p_agent_id: agent.id, p_delivery: true })).error,
+          "assign delivery",
+        );
+        fail(
+          (await adminClient.rpc("transition_order", { p_order_id: id, p_to: "OUT_FOR_DELIVERY", p_notes: "Delivery agent assigned" })).error,
+          "OUT_FOR_DELIVERY",
+        );
       } else if (status === "PICKED_UP") {
-        transitionOrder(order.id, "PICKED_UP", agentSession, { actualBagCount: entry.bags });
+        fail(
+          (await agentClient.rpc("transition_order", { p_order_id: id, p_to: "PICKED_UP", p_notes: "Collected", p_actual_bags: entry.bags })).error,
+          "PICKED_UP",
+        );
       } else if (status === "DELIVERED") {
-        transitionOrder(order.id, "DELIVERED", agentSession, { notes: "Handed over to the customer" });
+        fail(
+          (await agentClient.rpc("transition_order", { p_order_id: id, p_to: "DELIVERED", p_notes: "Handed over to the customer" })).error,
+          "DELIVERED",
+        );
       } else {
-        transitionOrder(order.id, status, staffSession);
+        fail(
+          (await staffClient.rpc("transition_order", { p_order_id: id, p_to: status, p_notes: null })).error,
+          status,
+        );
       }
+
+      const event = EVENT_FOR_STATUS[status];
+      if (event) {
+        const actor =
+          status === "PICKED_UP" || status === "DELIVERED"
+            ? agentClient
+            : status === "PICKUP_ASSIGNED" || status === "OUT_FOR_DELIVERY"
+              ? adminClient
+              : staffClient;
+        await notify(actor, event, await load(), shopStaffIds);
+      }
+
       // The price is set once the shop knows the real item count.
-      if (status === "WASHING" && entry.price) setPrice(order.id, entry.price, staffSession);
+      if (status === "WASHING" && entry.price) {
+        fail(
+          (await staffClient.rpc("set_order_price", { p_order_id: id, p_price: entry.price })).error,
+          "set price",
+        );
+      }
     }
   }
 
-  setSetting("business_name", "QuickWash");
-  setSetting("service_area", "Puttalam");
-  setSetting("contact_phone", "0322265100");
-  setSetting("price_per_bag", "600");
-  setSetting("currency", "LKR");
+  const settings: Array<[string, string]> = [
+    ["business_name", "QuickWash"],
+    ["service_area", "Puttalam"],
+    ["contact_phone", "0322265100"],
+    ["price_per_bag", "600"],
+    ["currency", "LKR"],
+  ];
+  for (const [key, value] of settings) {
+    const { error } = await adminClient.from("settings").upsert({ key, value }, { onConflict: "key" });
+    if (error) throw new Error(`setting ${key}: ${error.message}`);
+  }
 
   console.log("");
   console.log("  Shop:      " + shop.name);
@@ -215,4 +402,7 @@ function main() {
   console.log("Done.");
 }
 
-main();
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+});

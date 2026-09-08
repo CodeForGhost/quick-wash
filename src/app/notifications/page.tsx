@@ -15,7 +15,7 @@ export default async function NotificationsPage() {
   const user = await getSessionUser();
   if (!user) redirect("/login");
 
-  const notifications = listNotifications(user.id, 60);
+  const notifications = await listNotifications(user.id, 60);
   const unread = notifications.filter((item) => !item.is_read).length;
   const orderPath = user.role === "CUSTOMER" ? "/customer/orders/" : "/admin/orders/";
 

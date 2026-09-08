@@ -12,11 +12,11 @@ export const GET = handle(async (request: Request) => {
 
   const orders =
     kind === "delivery"
-      ? listOrders({
+      ? await listOrders({
           deliveryAgentId: user.id,
           statuses: ["OUT_FOR_DELIVERY", "DELIVERED"] as OrderStatus[],
         })
-      : listOrders({
+      : await listOrders({
           pickupAgentId: user.id,
           statuses: ["PICKUP_ASSIGNED", "PICKED_UP"] as OrderStatus[],
           pickupDate: date,

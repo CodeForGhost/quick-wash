@@ -15,7 +15,7 @@ export default async function AdminSettingsPage() {
         title="Settings"
         subtitle="The details customers see and the guide price staff work from."
       />
-      <SettingsForm settings={allSettings()} />
+      <SettingsForm settings={await allSettings()} />
     </>
   );
 }

@@ -6,5 +6,5 @@ import { listCustomers } from "@/lib/repos";
 export const GET = handle(async (request: Request) => {
   await requireUser("ADMIN");
   const { searchParams } = new URL(request.url);
-  return ok(listCustomers(searchParams.get("q") ?? undefined));
+  return ok(await listCustomers(searchParams.get("q") ?? undefined));
 });

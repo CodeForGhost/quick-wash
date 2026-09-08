@@ -7,7 +7,7 @@ export const metadata = { title: "Profile · QuickWash" };
 
 export default async function AgentProfilePage() {
   const session = await requireRole("PICKUP_AGENT");
-  const user = getUser(session.id)!;
+  const user = (await getUser(session.id))!;
   return (
     <>
       <PageTitle eyebrow="Your account" title="Profile" subtitle="Customers see this number when they need to reach you." />

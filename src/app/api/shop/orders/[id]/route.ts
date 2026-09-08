@@ -12,8 +12,8 @@ type Params = { params: Promise<{ id: string }> };
 export const GET = handle(async (_request: Request, { params }: Params) => {
   const user = await requireUser("SHOP_STAFF", "ADMIN");
   const { id } = await params;
-  const order = /^\d+$/.test(id) ? getOrder(Number(id)) : getOrderByNumber(id.toUpperCase());
+  const order = /^\d+$/.test(id) ? await getOrder(Number(id)) : await getOrderByNumber(id.toUpperCase());
   if (!order) throw notFound();
   assertCanView(user, order);
-  return ok({ order, history: getStatusHistory(order.id) });
+  return ok({ order, history: await getStatusHistory(order.id) });
 });

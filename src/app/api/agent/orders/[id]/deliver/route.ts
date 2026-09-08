@@ -10,7 +10,7 @@ export const POST = handle(async (request: Request, { params }: Params) => {
   const user = await requireUser("PICKUP_AGENT", "ADMIN");
   const { id } = await params;
   const input = deliverSchema.parse(await readJson(request));
-  const order = transitionOrder(Number(id), "DELIVERED", user, {
+  const order = await transitionOrder(Number(id), "DELIVERED", user, {
     notes: input.notes || "Delivered to the customer",
   });
   return ok(order);

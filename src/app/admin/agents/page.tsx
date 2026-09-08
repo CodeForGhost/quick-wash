@@ -9,9 +9,9 @@ export const metadata = { title: "Agents · QuickWash" };
 export default async function AdminAgentsPage() {
   await requireRole("ADMIN");
 
-  const agents = listAgentsWithWorkload();
-  const staff = listUsers("SHOP_STAFF");
-  const shops = listShops();
+  const agents = await listAgentsWithWorkload();
+  const staff = await listUsers("SHOP_STAFF");
+  const shops = await listShops();
 
   return (
     <>

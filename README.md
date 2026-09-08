@@ -4,7 +4,8 @@ An MVP implementation of [`srs-doc.md`](./srs-doc.md): customers request a laund
 agent collects several homes on a single round, the laundry shop processes and prices the order,
 and the customer follows it until it comes back clean.
 
-Built with **Next.js 15** (App Router, TypeScript, Tailwind CSS v4), **shadcn/ui** and **SQLite**.
+Built with **Next.js 15** (App Router, TypeScript, Tailwind CSS v4), **shadcn/ui** and
+**Supabase** - Postgres, Auth and row level security.
 
 ---
 
@@ -12,9 +13,14 @@ Built with **Next.js 15** (App Router, TypeScript, Tailwind CSS v4), **shadcn/ui
 
 ```bash
 npm install
-npm run db:seed     # creates data/laundry.db with a shop, staff, agents, customers and orders
-npm run dev         # http://localhost:3000
+cp .env.example .env.local   # then fill in the project URL and the two keys
+# paste supabase/schema.sql into the Supabase SQL editor
+npm run db:seed              # a shop, staff, agents, customers and orders across the pipeline
+npm run dev
 ```
+
+[`supabase/README.md`](./supabase/README.md) is the full setup, including how to run the whole
+stack locally with `npx supabase start`.
 
 For a production build:
 
@@ -35,38 +41,41 @@ for each of them.
 | Pickup agent| `0770000003`  |
 | Customer    | `0771111111`  |
 
-`npm run db:reset` deletes the database and reseeds from scratch.
+`npm run db:reset` reseeds from scratch (the seed clears first, so it is idempotent). Sign-in is
+by mobile number; the passwords are all `password123`.
 
 ---
 
 ## Deviation from the SRS
 
 The SRS recommends PostgreSQL + Prisma and a separate Node backend (section 15/16). This build
-uses **SQLite** as requested, accessed through `better-sqlite3` with hand-written SQL, and runs
-the API as Next.js route handlers rather than a separate service. Everything else follows the
-document. The schema in `src/lib/schema.ts` is a direct translation of SRS section 10, so moving
-to PostgreSQL later is mostly a driver swap.
+uses **PostgreSQL on Supabase**, reached through `supabase-js`, and runs the API as Next.js route
+handlers rather than a separate service. [`supabase/schema.sql`](./supabase/schema.sql) is a
+direct translation of SRS section 10.
 
-Authentication uses phone number + password, which the SRS names as the acceptable starting
-point (OTP is listed as a later improvement). Notifications are stored in-app; the SRS allows
-WhatsApp or SMS to be added later, and `src/lib/notifications.ts` is the single place to do it.
+Authentication uses **mobile number + password**, as FR-001 asks. Supabase Auth is email-based
+and has no phone flow without an SMS provider, so each account carries a synthetic address
+derived from the number (`0771111111@quickwash.local`). Nobody sees it and nothing is sent to
+it; `phoneToAuthEmail` in `src/lib/supabase/env.ts` is the whole of the mapping.
 
----
+Notifications are stored in-app; the SRS allows WhatsApp or SMS to be added later, and
+`src/lib/notifications.ts` is the single place to do it.
 
 ## How it is put together
 
 ```
 src/
   lib/
-    schema.ts        SQLite schema - SRS section 10, as one bundled string
-    db.ts            connection, WAL, typed all/get/run helpers
+    supabase/        server.ts (cookie-bound), admin.ts (service role), env.ts
+    auth.ts          who is signed in, and requireUser()
     types.ts         roles, the ten order statuses, domain records
-    orders.ts        the state machine, order numbering, and business rules BR-001..BR-010
+    orders.ts        the state machine and business rules BR-001..BR-010
     repos.ts         users, addresses, shops, routes, settings
-    notifications.ts the SRS section 19 recipient matrix
-    auth.ts          sessions and requireUser(); password.ts holds the hashing
+    notifications.ts the SRS section 19 fan-out
+    notification-events.ts  the recipient matrix, shared with the seeder
     validation.ts    zod schemas for every request body
     api.ts           the { ok, data } envelope and error-to-status mapping
+  middleware.ts      refreshes the session; bounces signed-out visitors
   app/
     api/             31 route handlers, matching SRS section 14
     login, register  signed-out screens
@@ -79,7 +88,13 @@ src/
     patterns.tsx   QuickWash screen patterns composed from those primitives
     field.tsx      the label/hint/error contract every form control reads
     app-shell.tsx  role guard and chrome; nav.tsx, order-card.tsx, pipeline-rail.tsx
-scripts/seed.ts      seeds orders sitting at every stage of the pipeline
+scripts/
+  seed.ts            seeds orders sitting at every stage of the pipeline
+  acceptance.mjs     47 checks through the app, over real HTTP
+  rls.mjs            21 checks around it, straight at PostgREST
+supabase/
+  schema.sql         tables, views, policies and the functions that write
+  README.md          setup, and what the policies say in words
 ```
 
 ### The order state machine
@@ -92,14 +107,28 @@ scripts/seed.ts      seeds orders sitting at every stage of the pipeline
   `PENDING`, so the customer's trail is complete.
 - **BR-003/BR-004/BR-005/BR-010** - the role making the change must be permitted to reach that
   status, and an agent may only touch orders assigned to them.
-- **BR-002** - order numbers (`PU-2026-0001`) come from a per-year counter updated inside the
-  same transaction as the insert.
+- **BR-002** - order numbers (`PU-2026-0001`) come from a per-year counter incremented in a
+  single `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` inside the same transaction as the
+  insert, so two simultaneous requests cannot take the same number.
+
+PostgREST has no client-side transaction, so the writes that must land together are Postgres
+functions: `create_order`, `transition_order`, `set_order_price`, `create_route`. Each one is
+`security definer` and **re-checks the caller** - the anon key ships to the browser, so "the app
+already checked" is not a check. The transition table and the role map therefore exist twice, in
+`src/lib/orders.ts` and in `schema.sql`; the first shapes the UI, the second is the one that
+holds.
 
 ### Access control
 
-`requireUser(...roles)` guards the API; `AppShell` guards the pages, redirecting a signed-out
-visitor to `/login` and a wrong-role visitor to their own home. `canViewOrder` implements
-BR-008 - a customer only ever sees their own orders.
+Four layers, and only the last one is load-bearing.
+
+`src/middleware.ts` refreshes the session and bounces a signed-out visitor off the role sections
+before a page renders. `requireUser(...roles)` guards the API and `AppShell` guards the pages,
+redirecting a wrong-role visitor to their own home. `canViewOrder` shapes what a screen offers.
+
+**Row level security is what actually enforces it.** Every query runs as the signed-in person, so
+a request for more than you should see comes back empty rather than leaking. `can_view_order()`
+in `schema.sql` is BR-008; `supabase/README.md` states the rest in words.
 
 ---
 
@@ -138,21 +167,33 @@ it down through context - so `Input`, `Textarea` and `SelectTrigger` are correct
 
 ## What was verified
 
-Both checks below run against the built app over real HTTP.
+Two suites, checking different things. Both run against the built app.
 
-**The SRS section 20 acceptance loop**, end to end: register → request pickup → admin assigns →
-agent collects → shop receives, washes, dries, irons, prices, marks ready → admin assigns
-delivery → agent delivers → customer sees the completed order. Plus status history, notifications,
-QR generation, and FR-022 batch routes. Alongside it, the access rules were checked negatively:
-another customer reading the order (403), a customer assigning an agent (403), an agent setting
-shop status (403), a customer setting the price (403), a backwards transition (409), and an
-unauthenticated request (401). **34/34 passed.**
+```bash
+npm run build && npx next start -p 3021 &
+npm run test:acceptance -- http://localhost:3021   # 47 checks, through the app
+npm run test:rls                                   # 21 checks, around it
+```
 
-**Every page for every role** renders 200 with no server-component error, and the role guards
-redirect correctly.
+**`test:acceptance`** is the SRS section 20 loop end to end: register -> request pickup ->
+admin assigns -> agent collects -> shop receives, washes, dries, irons, prices, marks ready ->
+admin assigns delivery -> agent delivers -> customer sees the completed order. Plus the negative
+access checks, five concurrent order requests taking five distinct numbers, case-insensitive
+search, a price of `1234.56` surviving as a number, and status history. **47/47.**
 
-There is no automated test suite in the repo - the checks above were run as throwaway harnesses
-against the running server. If this goes past a pilot, those are worth committing as real tests.
+**`test:rls`** talks straight to PostgREST with the anon key - the same key that ships to the
+browser - as a signed-in customer, with the app taken out of the way. It tries what someone with
+a developer console would try: read another customer's order, forge a history row, write a
+notification to somebody else, jump an order to `DELIVERED`, plan a route, set their own price,
+make themselves an administrator. **21/21.**
+
+That last one is why the suite exists. Its first run found that a customer could promote
+themselves to `ADMIN`: row level security grants or denies a whole row, so "you may edit your own
+profile" also meant "you may edit your own `role`". The `guard_user_columns` trigger in
+`schema.sql` is there because of it.
+
+**Every page for every role** renders 200 with no server-component error, the middleware bounces
+a signed-out visitor with a 307, and the role guards redirect correctly.
 
 ---
 

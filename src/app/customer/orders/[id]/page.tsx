@@ -21,11 +21,11 @@ export default async function OrderTrackingPage({ params, searchParams }: Props)
   const { id } = await params;
   const { created } = await searchParams;
 
-  const order = getOrder(Number(id));
+  const order = await getOrder(Number(id));
   // BR-008: a customer can only view their own orders.
   if (!order || order.customer_id !== user.id) notFound();
 
-  const history = getStatusHistory(order.id);
+  const history = await getStatusHistory(order.id);
   const canCancel = canTransition(order.status, "CANCELLED");
 
   return (
