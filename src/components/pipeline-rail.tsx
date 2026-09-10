@@ -7,7 +7,8 @@ import { cx } from "./patterns";
  *
  * The ten stages of the SRS state machine are a real sequence, so they are drawn
  * as a rail: a continuous line that fills up to wherever the laundry has reached.
- * Stacked on a phone, laid out horizontally from `sm` up.
+ * The stage it is at now is filled too - it has happened - and wears a halo to
+ * mark it as the current one. Stacked on a phone, horizontal from `sm` up.
  */
 export function PipelineRail({ status, className }: { status: OrderStatus; className?: string }) {
   if (status === "CANCELLED") {
@@ -45,14 +46,16 @@ export function PipelineRail({ status, className }: { status: OrderStatus; class
                 className={cx(
                   "relative z-10 mt-1 size-4 shrink-0 rounded-full border-2",
                   state === "done" && "border-lagoon bg-lagoon",
-                  state === "current" && "border-lagoon bg-surface ring-4 ring-lagoon-soft",
+                  state === "current" && "border-lagoon bg-lagoon ring-4 ring-lagoon-soft",
                   state === "todo" && "border-hairline bg-surface",
                 )}
               />
               <span
                 className={cx(
                   "text-sm leading-6",
-                  state === "todo" ? "text-ink-faint" : "font-semibold text-ink",
+                  state === "done" && "font-semibold text-ink",
+                  state === "current" && "font-bold text-lagoon",
+                  state === "todo" && "text-ink-faint",
                 )}
               >
                 {STATUS_LABELS[stage]}
@@ -81,7 +84,7 @@ export function PipelineRail({ status, className }: { status: OrderStatus; class
                     className={cx(
                       "block size-3.5 rounded-full border-2",
                       state === "done" && "border-lagoon bg-lagoon",
-                      state === "current" && "size-4 border-lagoon bg-surface ring-4 ring-lagoon-soft",
+                      state === "current" && "size-4 border-lagoon bg-lagoon ring-4 ring-lagoon-soft",
                       state === "todo" && "border-hairline bg-ground",
                     )}
                   />
