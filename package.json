@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "db:seed": "tsx --env-file=.env.local scripts/seed.ts",
     "db:reset": "npm run db:seed",
+    "claims:sync": "tsx --env-file=.env.local scripts/sync-claims.ts",
     "test:acceptance": "node scripts/acceptance.mjs",
     "db:schema": "supabase db reset --local || echo \"paste supabase/schema.sql into the SQL editor\"",
     "test:rls": "node --env-file=.env.local scripts/rls.mjs"

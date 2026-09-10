@@ -159,7 +159,7 @@ export async function updateUser(id: number, patch: UserUpdate): Promise<User> {
   /*
    * Deactivating an account must end its active sessions - and so must moving
    * someone to another shop, now that the shop rides in the access token
-   * (custom_access_token_hook in schema.sql). The token is only re-issued on
+   * (sync_user_claims in schema.sql). The token is only re-issued on
    * refresh, so without this the old shop's orders would keep being offered
    * until it expired. The queries behind them would return nothing - RLS
    * reads the current row - but the screens should not be there at all.

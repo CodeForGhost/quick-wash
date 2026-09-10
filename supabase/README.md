@@ -26,8 +26,8 @@ re-run: it drops first. It creates
   `assign_agent`, `next_order_number`, `notify_users`, `notify_order`. The four write
   functions return the order they wrote (`order_details`) rather than its id, so the app
   never reads back over the network what it has just written;
-- `custom_access_token_hook` — puts the caller's row id, role and shop in the access
-  token, so a request costs no query to find out who is asking. Needs step 2b;
+- `sync_user_claims` — keeps the caller's row id, role and shop in the access token, so a
+  request costs no query to find out who is asking. Step 2b backfills existing accounts;
 - `order_status_counts` and `order_status_counts_by_date`, so a dashboard counts in
   Postgres instead of pulling every order across to count in JavaScript;
 - row level security on all eight tables.
@@ -38,20 +38,23 @@ re-run: it drops first. It creates
 addresses are synthetic and no mail can reach them, so a confirmation step would lock
 every customer out at registration.
 
-## 2b. Switch on the access token hook
+## 2b. Put the role in the token
 
-**Authentication → Hooks → Customize Access Token (JWT) Claims**, choose
-`public.custom_access_token_hook`, and enable it.
+```bash
+npm run claims:sync
+```
 
-This is what makes reading the session free. `getClaims()` in `src/lib/auth.ts` verifies
-the token's signature locally against the project's public key, and the hook is what puts
-the role and shop in the token so that no query is needed either. Skip this step and
-nothing breaks — `getSessionUser()` notices the claims are missing and reads the `users`
-row as it always did — but you keep paying a round trip per request for it.
+Once, after the schema is in. This is what makes reading the session free. `getClaims()` in
+`src/lib/auth.ts` verifies the token's signature locally against the project's public key,
+and the `sync_user_claims` trigger keeps each account's `app_metadata` — which Supabase
+puts in every token — carrying the row id, role and shop, so no query is needed either.
+The script backfills the accounts that already exist; the trigger handles everyone after.
+Skip it and nothing breaks — `getSessionUser()` notices the claims are missing and reads
+the `users` row as it always did — but you keep paying a round trip per request for it.
 
-The claims are stamped when a token is issued, so they go stale if a role or shop changes
-underneath an open session. `updateUser()` ends those sessions for exactly that reason.
-None of this is what enforces anything: RLS reads the live row through `my_role()`.
+The claims are stamped when a token is issued, so they go stale if a shop changes underneath
+an open session. `updateUser()` ends those sessions for exactly that reason. None of this is
+what enforces anything: RLS reads the live row through `my_role()`.
 
 ## 3. Point the app at the project
 

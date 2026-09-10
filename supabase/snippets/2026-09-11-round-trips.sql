@@ -8,9 +8,9 @@
 -- warm. The app was making eight of them to move one order forward. This
 -- file removes five:
 --
---   * custom_access_token_hook  - the role rides in the JWT, so a request no
+--   * sync_user_claims          - the role rides in the JWT, so a request no
 --                                 longer reads `users` to find out who is
---                                 asking (needs the dashboard step below);
+--                                 asking;
 --   * order_details             - the four write functions now return the
 --                                 order they just wrote, so nothing reads it
 --                                 back afterwards;
@@ -26,65 +26,56 @@
 -- getSessionUser() used to cost two round trips: one to the Auth API to check
 -- the token, one to `users` for the role. The first is gone on the app side -
 -- getClaims() verifies the ES256 signature locally. This removes the second
--- by putting what the app needs in the token itself.
+-- by putting what the app needs in the token itself. No dashboard step: the
+-- trigger writes app_metadata, which Supabase puts in every token it issues.
 --
--- REQUIRES A DASHBOARD STEP: Authentication -> Hooks -> Customize Access
--- Token (JWT) Claims -> select public.custom_access_token_hook. Without it
--- the hook never runs and src/lib/auth.ts falls back to the query, so the app
--- keeps working - just at the old cost.
---
--- The claims are baked in when the token is issued, so a role change reaches
--- an open session only when the token next refreshes. updateUser() in
--- src/lib/repos.ts therefore ends the sessions of anyone whose role, shop or
--- active flag changed, exactly as it already did for a deactivation.
--- Authorization does not rest on this either way: RLS reads `users` through
--- my_role(), which is always current.
+-- After running this, backfill the accounts that already exist:
+--     npm run claims:sync
 
-create or replace function public.custom_access_token_hook(event jsonb)
-returns jsonb
-language plpgsql stable
-set search_path = public
+-- An earlier revision did this with an access token hook. Retire it.
+drop policy   if exists "the token hook reads users" on public.users;
+drop function if exists public.custom_access_token_hook(jsonb);
+
+/**
+ * Keeps the access token in step with the row. Supabase copies an account's
+ * app_metadata into every token it issues, so this writes the row id, role,
+ * shop and name there whenever they change - and src/lib/auth.ts reads the
+ * session from the token without a query. Security definer: only the owner
+ * may write to auth.users, which is also why the app never can.
+ *
+ * Existing accounts are backfilled once with scripts/sync-claims.ts. An open
+ * session sees a change at its next token refresh (within the hour) or
+ * sign-in; updateUser() ends the session outright when the shop or active
+ * flag changes so nothing waits on that.
+ */
+create or replace function public.sync_user_claims()
+returns trigger
+language plpgsql security definer set search_path = public
 as $$
-declare
-  claims jsonb := coalesce(event -> 'claims', '{}'::jsonb);
-  app    jsonb := coalesce(claims -> 'app_metadata', '{}'::jsonb);
-  u      record;
 begin
-  select id, name, phone, email, role, shop_id, is_active
-    into u
-    from public.users
-   where auth_id = (event ->> 'user_id')::uuid;
+  if new.auth_id is null then return new; end if;
 
-  -- No row yet (the signup trigger runs in the same transaction as the first
-  -- token) - leave the claims alone and let the app fall back to the query.
-  if not found then
-    return event;
-  end if;
+  update auth.users
+     set raw_app_meta_data = coalesce(raw_app_meta_data, '{}'::jsonb) || jsonb_build_object(
+           'user_id',   new.id,
+           'name',      new.name,
+           'phone',     new.phone,
+           'email',     new.email,
+           'user_role', new.role,      -- not 'role': that is Postgres's own claim
+           'shop_id',   new.shop_id,
+           'is_active', new.is_active
+         )
+   where id = new.auth_id;
 
-  app := app || jsonb_build_object(
-    'user_id',   u.id,
-    'name',      u.name,
-    'phone',     u.phone,
-    'email',     u.email,
-    'user_role', u.role,      -- not 'role': that is Postgres's own claim
-    'shop_id',   u.shop_id,
-    'is_active', u.is_active
-  );
-
-  return jsonb_set(event, '{claims,app_metadata}', app);
+  return new;
 end;
 $$;
 
--- The hook runs as supabase_auth_admin, which is outside RLS and has to be
--- told it may read the table at all.
-grant usage on schema public to supabase_auth_admin;
-grant execute on function public.custom_access_token_hook(jsonb) to supabase_auth_admin;
-revoke execute on function public.custom_access_token_hook(jsonb) from authenticated, anon, public;
-grant select on table public.users to supabase_auth_admin;
-
-drop policy if exists "the token hook reads users" on public.users;
-create policy "the token hook reads users" on public.users
-  as permissive for select to supabase_auth_admin using (true);
+drop trigger if exists sync_user_claims on public.users;
+create trigger sync_user_claims
+  after insert or update of auth_id, name, phone, email, role, shop_id, is_active
+  on public.users
+  for each row execute function public.sync_user_claims();
 
 
 -- ============================================================================

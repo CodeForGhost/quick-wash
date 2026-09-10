@@ -65,7 +65,7 @@ export async function signOut(): Promise<void> {
   await supabase.auth.signOut();
 }
 
-/** The claims custom_access_token_hook adds. Absent when the hook is not on. */
+/** The claims sync_user_claims keeps in app_metadata. Absent until an account is synced. */
 function sessionFromClaims(app: Record<string, unknown> | undefined): SessionUser | null {
   if (!app) return null;
 
@@ -96,9 +96,10 @@ function sessionFromClaims(app: Record<string, unknown> | undefined): SessionUse
  * updateUser() ends the sessions of anyone whose role or shop changed, and why
  * RLS - which always reads the current row - remains the thing that decides.
  *
- * The role, shop and name ride in the token via custom_access_token_hook (see
- * schema.sql). Until that hook is switched on in the dashboard the claims will
- * not carry them and this falls back to reading the row, exactly as before.
+ * The role, shop and name ride in the token: the sync_user_claims trigger (see
+ * schema.sql) keeps them in app_metadata, which Supabase puts in every token.
+ * A token issued before an account was synced will not carry them, and this
+ * falls back to reading the row, exactly as before.
  *
  * cache() keeps it to once per request: the layout, the page and the guard
  * inside it all ask, and used to each pay for the answer.
@@ -114,7 +115,7 @@ export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
   const fromToken = sessionFromClaims(data.claims.app_metadata);
   if (fromToken) return fromToken;
 
-  // The hook is not enabled, or this token predates it.
+  // This token was issued before the account's claims were synced.
   const { data: row } = await supabase
     .from("users")
     .select("id, name, phone, email, role, shop_id, is_active")

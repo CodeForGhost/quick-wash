@@ -127,8 +127,8 @@ before a page renders. `requireUser(...roles)` guards the API and `AppShell` gua
 redirecting a wrong-role visitor to their own home. `canViewOrder` shapes what a screen offers.
 
 Working out who is asking costs no network call: `getClaims()` verifies the access token's
-signature against the project's public key locally, and `custom_access_token_hook` puts the role
-and shop in the token so there is nothing to look up. That is a token, so it is a snapshot — which
+signature against the project's public key locally, and the `sync_user_claims` trigger keeps the
+role and shop in the token so there is nothing to look up. That is a token, so it is a snapshot — which
 is why `updateUser()` ends the sessions of anyone whose shop or active flag changed, and why the
 sentence below still ends the argument.
 
