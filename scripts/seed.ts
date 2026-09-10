@@ -154,9 +154,16 @@ async function wipe(): Promise<void> {
   }
 }
 
+/* Puttalam's calendar day, so seeded "today" orders read as today in the app. */
+const DAY = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Asia/Colombo",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
 function dateOffset(days: number): string {
-  const d = new Date(Date.now() + days * 86_400_000 - new Date().getTimezoneOffset() * 60_000);
-  return d.toISOString().slice(0, 10);
+  return DAY.format(new Date(Date.now() + days * 86_400_000));
 }
 
 const today = () => dateOffset(0);

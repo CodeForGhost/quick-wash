@@ -5,18 +5,26 @@ import { Button, Card, Field, Input, Notice, Textarea, cx } from "@/components/p
 import { api } from "@/lib/client";
 import { useAction } from "@/lib/use-action";
 import { TIME_SLOTS, type Address } from "@/lib/types";
+import { TIME_ZONE, dayIn, minutesIntoDay } from "@/lib/format";
 
-/** The next seven days, so the customer picks a day rather than typing a date. */
+/**
+ * The next seven days, so the customer picks a day rather than typing a date.
+ * The days are Puttalam's - a customer travelling, or a phone with its clock
+ * set elsewhere, still books against the day the agent will actually drive.
+ */
 function upcomingDays(count = 7) {
-  const offset = new Date().getTimezoneOffset() * 60_000;
   return Array.from({ length: count }, (_, index) => {
-    const date = new Date(Date.now() + index * 86_400_000 - offset);
-    const value = date.toISOString().slice(0, 10);
+    const date = new Date(Date.now() + index * 86_400_000);
     return {
-      value,
+      value: dayIn(date),
       today: index === 0,
-      weekday: index === 0 ? "Today" : index === 1 ? "Tomorrow" : date.toLocaleDateString("en-GB", { weekday: "short" }),
-      day: date.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }),
+      weekday:
+        index === 0
+          ? "Today"
+          : index === 1
+            ? "Tomorrow"
+            : date.toLocaleDateString("en-GB", { timeZone: TIME_ZONE, weekday: "short" }),
+      day: date.toLocaleDateString("en-GB", { timeZone: TIME_ZONE, day: "2-digit", month: "short" }),
     };
   });
 }
@@ -35,23 +43,23 @@ function slotOpensAt(slot: string): number {
  * opened cannot be collected in, so today loses its slots as the day goes on
  * and every other day keeps all five.
  *
- * `now` is null until the component has mounted: the cut-off depends on the
- * reader's clock, which the server does not share, so the server-rendered
- * first paint offers everything and the browser narrows it.
+ * `now` is null until the component has mounted. The zone is fixed, so server
+ * and client agree on it, but the clock still moves between the two renders -
+ * so the server-rendered first paint offers everything and the browser narrows
+ * it rather than risking a mismatch on a slot boundary.
  */
 function slotsOn(day: { today: boolean }, now: number | null): readonly string[] {
   if (!day.today || now === null) return TIME_SLOTS;
   return TIME_SLOTS.filter((slot) => slotOpensAt(slot) > now);
 }
 
-/** Minutes past midnight, on the reader's clock, re-read each minute. */
+/** Minutes past midnight in Puttalam, re-read each minute. */
 function useMinutesIntoDay(): number | null {
   const [minutes, setMinutes] = useState<number | null>(null);
 
   useEffect(() => {
     function read() {
-      const now = new Date();
-      setMinutes(now.getHours() * 60 + now.getMinutes());
+      setMinutes(minutesIntoDay());
     }
     read();
     // A form left open long enough to outlast a window must not offer it.
@@ -68,7 +76,7 @@ export function NewOrderForm({ addresses }: { addresses: Address[] }) {
   const minutes = useMinutesIntoDay();
 
   const [addressId, setAddressId] = useState(addresses[0]?.id ?? 0);
-  const [pickupDate, setPickupDate] = useState(() => upcomingDays(1)[0].value);
+  const [pickupDate, setPickupDate] = useState(() => dayIn());
   const [slot, setSlot] = useState<string>(TIME_SLOTS[0]);
   const [bags, setBags] = useState(1);
   const [items, setItems] = useState("");

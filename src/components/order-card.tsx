@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { formatDate, formatPrice } from "@/lib/format";
+import { formatDate, formatDateTime, formatPrice } from "@/lib/format";
 import type { OrderWithDetails } from "@/lib/types";
 import { StatusPill, cx } from "./patterns";
 import { LinkSpinner } from "./pending";
@@ -87,21 +87,9 @@ export function StatusTrail({
   );
 }
 
-/** Rendered on the client so the timestamp lands in the reader's timezone. */
+/** The machine-readable instant, rendered on Puttalam's clock like the rest. */
 function TrailTime({ value }: { value: string }) {
   const date = new Date(value.includes("T") ? value : value.replace(" ", "T") + "Z");
-  const iso = Number.isNaN(date.getTime()) ? value : date.toISOString();
-  return (
-    <time dateTime={iso}>
-      {Number.isNaN(date.getTime())
-        ? value
-        : date.toLocaleString("en-GB", {
-            day: "2-digit",
-            month: "short",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true,
-          })}
-    </time>
-  );
+  if (Number.isNaN(date.getTime())) return <time>{value}</time>;
+  return <time dateTime={date.toISOString()}>{formatDateTime(date.toISOString())}</time>;
 }

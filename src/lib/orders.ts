@@ -1,6 +1,7 @@
 import "server-only";
 import { supabaseServer } from "./supabase/server";
 import { ERRORS, badRequest, conflict, forbidden, notFound } from "./errors";
+import { today } from "./format";
 import { notify, type NotificationEvent } from "./notifications";
 import {
   ORDER_STATUSES,
@@ -272,10 +273,9 @@ export async function createOrder(
   void actorId; // the function reads the caller from the session, not the argument
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.pickupDate)) throw badRequest(ERRORS.invalidPickupDate);
-  const todayStr = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000)
-    .toISOString()
-    .slice(0, 10);
-  if (!input.allowPastDate && input.pickupDate < todayStr) throw badRequest(ERRORS.invalidPickupDate);
+  // Puttalam's today, not the host's: on a UTC server the first five and a half
+  // hours of every local day would otherwise reject that day as already past.
+  if (!input.allowPastDate && input.pickupDate < today()) throw badRequest(ERRORS.invalidPickupDate);
   if (!Number.isInteger(input.bagCount) || input.bagCount < 1) {
     throw badRequest("Please enter at least one laundry bag.");
   }

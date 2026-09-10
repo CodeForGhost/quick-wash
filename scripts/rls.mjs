@@ -144,11 +144,23 @@ const main = async () => {
   check("a customer cannot set their own price", Boolean(priced), priced?.message?.slice(0, 60));
 
   console.log("\n--- Orders cannot be written around the functions ---");
+  // Aim at a row that is not already DELIVERED, so a write that did get through
+  // would visibly change something. `mine[0]` cannot tell "RLS blocked it" from
+  // "it was delivered anyway", and the select behind `mine` is unordered, so
+  // which row that is drifts with the data.
+  const { data: target } = await ahmed
+    .from("laundry_orders")
+    .select("id, status")
+    .neq("status", "DELIVERED")
+    .order("id", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const targetId = target?.id ?? myOrder;
   const { error: direct } = await ahmed
     .from("laundry_orders")
     .update({ status: "DELIVERED" })
-    .eq("id", myOrder);
-  const { data: still } = await ahmed.from("laundry_orders").select("status").eq("id", myOrder).single();
+    .eq("id", targetId);
+  const { data: still } = await ahmed.from("laundry_orders").select("status").eq("id", targetId).single();
   check(
     "a customer cannot UPDATE an order row directly",
     still?.status !== "DELIVERED",

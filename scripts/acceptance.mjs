@@ -85,7 +85,13 @@ const main = async () => {
   check("the registration created an address", addresses.body?.data?.length > 0);
   const addressId = addresses.body?.data?.[0]?.id;
 
-  const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  // Puttalam's day, matching the server's past-date guard.
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
   const made = await call("new", "/api/orders", {
     method: "POST",
     body: JSON.stringify({
