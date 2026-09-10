@@ -23,7 +23,13 @@ re-run: it drops first. It creates
   meaning "you may edit your own role";
 - the functions that do the writes which must land together, because PostgREST has no
   client-side transaction: `create_order`, `transition_order`, `set_order_price`,
-  `assign_agent`, `next_order_number`, `notify_users`;
+  `assign_agent`, `next_order_number`, `notify_users`, `notify_order`. The four write
+  functions return the order they wrote (`order_details`) rather than its id, so the app
+  never reads back over the network what it has just written;
+- `custom_access_token_hook` — puts the caller's row id, role and shop in the access
+  token, so a request costs no query to find out who is asking. Needs step 2b;
+- `order_status_counts` and `order_status_counts_by_date`, so a dashboard counts in
+  Postgres instead of pulling every order across to count in JavaScript;
 - row level security on all eight tables.
 
 ## 2. Turn off email confirmation
@@ -31,6 +37,21 @@ re-run: it drops first. It creates
 **Authentication → Sign In / Providers → Email**, switch off "Confirm email". The
 addresses are synthetic and no mail can reach them, so a confirmation step would lock
 every customer out at registration.
+
+## 2b. Switch on the access token hook
+
+**Authentication → Hooks → Customize Access Token (JWT) Claims**, choose
+`public.custom_access_token_hook`, and enable it.
+
+This is what makes reading the session free. `getClaims()` in `src/lib/auth.ts` verifies
+the token's signature locally against the project's public key, and the hook is what puts
+the role and shop in the token so that no query is needed either. Skip this step and
+nothing breaks — `getSessionUser()` notices the claims are missing and reads the `users`
+row as it always did — but you keep paying a round trip per request for it.
+
+The claims are stamped when a token is issued, so they go stale if a role or shop changes
+underneath an open session. `updateUser()` ends those sessions for exactly that reason.
+None of this is what enforces anything: RLS reads the live row through `my_role()`.
 
 ## 3. Point the app at the project
 
@@ -121,6 +142,7 @@ denies a whole row, so "you may edit your own profile" also meant "you may edit 
 | --- | --- |
 | Who is signed in, and their role | `src/lib/auth.ts` |
 | Cookie-bound Supabase client | `src/lib/supabase/server.ts` |
+| The signing keys `getClaims()` verifies against | `src/lib/supabase/jwks.ts` |
 | Service-role client (staff accounts only) | `src/lib/supabase/admin.ts` |
 | Orders, the state machine, notifications | `src/lib/orders.ts`, `src/lib/notifications.ts` |
 | Users, addresses, shops, routes, settings | `src/lib/repos.ts` |
@@ -149,11 +171,15 @@ re-enter its own policy and recurse.
 
 ## Two rules live in two places
 
-`src/lib/orders.ts` has the transition table and the role map; `allowed_transition()` and
-`role_may_set()` in `schema.sql` have them again. The TypeScript copy shapes the UI —
-which buttons a screen offers, and a clean message when something is not allowed. The SQL
-copy is the one that cannot be bypassed. **Change one and change the other**;
-`test:rls` will tell you if they have drifted.
+`src/lib/orders.ts` has the transition table; `allowed_transition()` in `schema.sql` has
+it again. The TypeScript copy shapes the UI — which buttons a screen offers. The SQL copy
+is the one that cannot be bypassed. **Change one and change the other**; `test:rls` will
+tell you if they have drifted.
+
+The role map used to be duplicated the same way. It is not any more: `role_may_set()` in
+the schema is the only copy, and `fromRpc()` in `src/lib/orders.ts` turns each raise back
+into the message the screen shows. Checking it twice meant reading the order over the
+network before every write purely to reject it in TypeScript first.
 
 ## Why not email
 

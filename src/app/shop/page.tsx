@@ -10,11 +10,14 @@ export const metadata = { title: "Counter · QuickWash" };
 export default async function ShopDashboard() {
   const user = await requireRole("SHOP_STAFF");
   const shopId = user.shop_id ?? undefined;
-  const counts = await statusCounts();
 
-  const incoming = await listOrders({ shopId, statuses: ["PICKED_UP"] });
-  const processing = await listOrders({ shopId, statuses: ["AT_LAUNDRY", "WASHING", "DRYING", "IRONING"] });
-  const ready = await listOrders({ shopId, statuses: ["READY"] });
+  // Four independent queries; one wave rather than four round trips.
+  const [counts, incoming, processing, ready] = await Promise.all([
+    statusCounts(),
+    listOrders({ shopId, statuses: ["PICKED_UP"] }),
+    listOrders({ shopId, statuses: ["AT_LAUNDRY", "WASHING", "DRYING", "IRONING"] }),
+    listOrders({ shopId, statuses: ["READY"] }),
+  ]);
 
   return (
     <>

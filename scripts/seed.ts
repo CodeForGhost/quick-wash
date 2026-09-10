@@ -298,7 +298,9 @@ async function main(): Promise<void> {
     const agentClient = await as(agent.phone);
     const customerClient = await as(customer.phone);
 
-    const { data: orderId, error } = await customerClient.rpc("create_order", {
+    // create_order returns the order it wrote, not just its id, so that the
+    // app never has to read it back over the network (see order_details).
+    const { data: order, error } = await customerClient.rpc("create_order", {
       p_address_id: customer.addressId,
       p_pickup_date: entry.date,
       p_pickup_time_slot: entry.slot,
@@ -308,7 +310,7 @@ async function main(): Promise<void> {
       p_customer_id: customer.id,
     });
     if (error) throw new Error(`order for ${customer.phone}: ${error.message}`);
-    const id = Number(orderId);
+    const id = Number((order as { id: number }).id);
     created += 1;
 
     const load = async (): Promise<LaundryOrder> => {

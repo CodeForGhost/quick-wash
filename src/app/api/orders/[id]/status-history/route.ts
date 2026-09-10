@@ -9,8 +9,11 @@ type Params = { params: Promise<{ id: string }> };
 export const GET = handle(async (_request: Request, { params }: Params) => {
   const user = await requireUser();
   const { id } = await params;
-  const order = await getOrder(Number(id));
+  const [order, history] = await Promise.all([
+    getOrder(Number(id)),
+    getStatusHistory(Number(id)),
+  ]);
   if (!order) throw notFound();
   assertCanView(user, order);
-  return ok(await getStatusHistory(order.id));
+  return ok(history);
 });

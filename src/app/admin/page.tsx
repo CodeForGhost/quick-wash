@@ -14,22 +14,29 @@ export default async function AdminDashboard() {
   await requireRole("ADMIN");
 
   const todayStr = today();
-  const counts = await statusCounts();
-  const todayCounts = await statusCounts(todayStr);
-  const agents = await listAgentsWithWorkload();
 
-  const unassigned = await listOrders({ statuses: ["PENDING"] });
-  const readyForDelivery = await listOrders({ statuses: ["READY"] });
-  const todayOrders = await listOrders({ pickupDate: todayStr });
+  /*
+   * Seven questions, none of which depends on the answer to another. Awaited
+   * one after the next they were seven round trips to Supabase end to end -
+   * most of the time this page took. In one wave they cost about as much as
+   * the slowest of them.
+   */
+  const [counts, todayCounts, agents, unassigned, readyForDelivery, todayOrders, delivered] =
+    await Promise.all([
+      statusCounts(),
+      statusCounts(todayStr),
+      listAgentsWithWorkload(),
+      listOrders({ statuses: ["PENDING"] }),
+      listOrders({ statuses: ["READY"] }),
+      listOrders({ pickupDate: todayStr }),
+      listOrders({ statuses: ["DELIVERED"] }),
+    ]);
 
   const active = Object.entries(counts)
     .filter(([status]) => status !== "DELIVERED" && status !== "CANCELLED")
     .reduce((total, [, count]) => total + count, 0);
 
-  const billed = (await listOrders({ statuses: ["DELIVERED"] })).reduce(
-    (total, order) => total + (order.price ?? 0),
-    0,
-  );
+  const billed = delivered.reduce((total, order) => total + (order.price ?? 0), 0);
 
   return (
     <>

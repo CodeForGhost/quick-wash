@@ -130,10 +130,19 @@ export async function updateUser(id: number, patch: UserUpdate): Promise<User> {
   if (patch.is_active !== undefined) fields.is_active = patch.is_active;
   if (patch.shop_id !== undefined) fields.shop_id = patch.shop_id;
 
+  let updated = user;
   if (Object.keys(fields).length) {
     fields.updated_at = new Date().toISOString();
-    const { error } = await supabase.from("users").update(fields).eq("id", id);
+    // .select() so the write also answers with the row, rather than a second
+    // call to read back what we just sent.
+    const { data, error } = await supabase
+      .from("users")
+      .update(fields)
+      .eq("id", id)
+      .select("*")
+      .single();
     if (error) throw error;
+    updated = data as User;
   }
 
   // The password and the sign-in address live in auth, not in this table.
@@ -147,12 +156,24 @@ export async function updateUser(id: number, patch: UserUpdate): Promise<User> {
     if (error) throw badRequest(error.message);
   }
 
-  // Deactivating an account must also end its active sessions.
-  if (patch.is_active === false && user.auth_id) {
+  /*
+   * Deactivating an account must end its active sessions - and so must moving
+   * someone to another shop, now that the shop rides in the access token
+   * (custom_access_token_hook in schema.sql). The token is only re-issued on
+   * refresh, so without this the old shop's orders would keep being offered
+   * until it expired. The queries behind them would return nothing - RLS
+   * reads the current row - but the screens should not be there at all.
+   * (A role is only ever set by createUser, before anyone has signed in.)
+   */
+  const endsSession =
+    patch.is_active === false ||
+    (patch.shop_id !== undefined && patch.shop_id !== user.shop_id);
+
+  if (endsSession && user.auth_id) {
     await supabaseAdmin().auth.admin.signOut(user.auth_id, "global").catch(() => {});
   }
 
-  return (await getUser(id))!;
+  return updated;
 }
 
 /**

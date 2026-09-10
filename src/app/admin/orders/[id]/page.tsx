@@ -16,10 +16,14 @@ export default async function AdminOrderPage({ params }: { params: Promise<{ id:
   await requireRole("ADMIN");
   const { id } = await params;
 
-  const order = await getOrder(Number(id));
+  // The agent list does not depend on the order; fetch both at once.
+  const [order, allAgents] = await Promise.all([
+    getOrder(Number(id)),
+    listAgentsWithWorkload(),
+  ]);
   if (!order) notFound();
 
-  const agents = (await listAgentsWithWorkload()).filter((agent) => agent.is_active);
+  const agents = allAgents.filter((agent) => agent.is_active);
 
   // FR-007 / FR-016: pickup assignment before collection, delivery once ready.
   const assignable =

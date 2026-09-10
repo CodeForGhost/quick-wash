@@ -9,8 +9,10 @@ export const metadata = { title: "Ready · QuickWash" };
 export default async function ShopReadyPage() {
   const user = await requireRole("SHOP_STAFF");
   const shopId = user.shop_id ?? undefined;
-  const ready = await listOrders({ shopId, statuses: ["READY"] });
-  const out = await listOrders({ shopId, statuses: ["OUT_FOR_DELIVERY"] });
+  const [ready, out] = await Promise.all([
+    listOrders({ shopId, statuses: ["READY"] }),
+    listOrders({ shopId, statuses: ["OUT_FOR_DELIVERY"] }),
+  ]);
 
   return (
     <>

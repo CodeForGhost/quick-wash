@@ -1,9 +1,11 @@
 import "server-only";
+import { cache } from "react";
 import { supabaseServer } from "./supabase/server";
-import { phoneToAuthEmail } from "./supabase/env";
+import { SUPABASE_ANON_KEY, SUPABASE_URL, phoneToAuthEmail } from "./supabase/env";
+import { signingKeys } from "./supabase/jwks";
 import { forbidden, unauthorized } from "./errors";
 import { normalisePhone } from "./validation";
-import type { Role, SessionUser } from "./types";
+import { ROLES, type Role, type SessionUser } from "./types";
 
 /**
  * Sign-in is by mobile number and password, which is what the SRS asks for and
@@ -63,37 +65,82 @@ export async function signOut(): Promise<void> {
   await supabase.auth.signOut();
 }
 
+/** The claims custom_access_token_hook adds. Absent when the hook is not on. */
+function sessionFromClaims(app: Record<string, unknown> | undefined): SessionUser | null {
+  if (!app) return null;
+
+  const id = app.user_id;
+  const role = app.user_role;
+  if (typeof id !== "number" || typeof role !== "string") return null;
+  if (!(ROLES as readonly string[]).includes(role)) return null;
+  if (app.is_active === false) return null;
+
+  return {
+    id,
+    name: typeof app.name === "string" ? app.name : "",
+    phone: typeof app.phone === "string" ? app.phone : "",
+    email: typeof app.email === "string" ? app.email : null,
+    role: role as Role,
+    shop_id: typeof app.shop_id === "number" ? app.shop_id : null,
+  };
+}
+
 /**
  * The signed-in user, or null.
  *
- * getUser() revalidates the token with Supabase rather than trusting the
- * cookie, so this is safe to gate pages on. The role lives on the users row,
- * not in the JWT, which keeps a stale token from carrying a stale role.
+ * getClaims() verifies the token's signature against the project's public key
+ * locally, so establishing who is asking costs no network call at all - where
+ * getUser() spent one on the Auth API for every request. It is the same
+ * guarantee: a forged or expired token fails verification. What it does not
+ * do is notice a change made since the token was issued, which is why
+ * updateUser() ends the sessions of anyone whose role or shop changed, and why
+ * RLS - which always reads the current row - remains the thing that decides.
+ *
+ * The role, shop and name ride in the token via custom_access_token_hook (see
+ * schema.sql). Until that hook is switched on in the dashboard the claims will
+ * not carry them and this falls back to reading the row, exactly as before.
+ *
+ * cache() keeps it to once per request: the layout, the page and the guard
+ * inside it all ask, and used to each pay for the answer.
  */
-export async function getSessionUser(): Promise<SessionUser | null> {
+export const getSessionUser = cache(async (): Promise<SessionUser | null> => {
   const supabase = await supabaseServer();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+  const { data, error } = await supabase.auth.getClaims(undefined, {
+    jwks: await signingKeys(SUPABASE_URL(), SUPABASE_ANON_KEY()),
+  });
+  if (error || !data?.claims?.sub) return null;
 
-  const { data } = await supabase
+  const fromToken = sessionFromClaims(data.claims.app_metadata);
+  if (fromToken) return fromToken;
+
+  // The hook is not enabled, or this token predates it.
+  const { data: row } = await supabase
     .from("users")
     .select("id, name, phone, email, role, shop_id, is_active")
-    .eq("auth_id", user.id)
+    .eq("auth_id", data.claims.sub)
     .maybeSingle();
 
-  if (!data || !data.is_active) return null;
+  if (!row || !row.is_active) return null;
 
   return {
-    id: data.id,
-    name: data.name,
-    phone: data.phone,
-    email: data.email,
-    role: data.role as Role,
-    shop_id: data.shop_id,
+    id: row.id,
+    name: row.name,
+    phone: row.phone,
+    email: row.email,
+    role: row.role as Role,
+    shop_id: row.shop_id,
   };
+});
+
+/**
+ * Pulls a new access token so a change just written to `users` shows up in the
+ * claims immediately, rather than at the next scheduled refresh. Called after
+ * someone edits their own profile; a role change ends the session instead.
+ */
+export async function refreshSessionClaims(): Promise<void> {
+  const supabase = await supabaseServer();
+  await supabase.auth.refreshSession();
 }
 
 /** Throws 401 when signed out, 403 when the role is not allowed. */

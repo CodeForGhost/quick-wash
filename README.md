@@ -126,6 +126,12 @@ Four layers, and only the last one is load-bearing.
 before a page renders. `requireUser(...roles)` guards the API and `AppShell` guards the pages,
 redirecting a wrong-role visitor to their own home. `canViewOrder` shapes what a screen offers.
 
+Working out who is asking costs no network call: `getClaims()` verifies the access token's
+signature against the project's public key locally, and `custom_access_token_hook` puts the role
+and shop in the token so there is nothing to look up. That is a token, so it is a snapshot — which
+is why `updateUser()` ends the sessions of anyone whose shop or active flag changed, and why the
+sentence below still ends the argument.
+
 **Row level security is what actually enforces it.** Every query runs as the signed-in person, so
 a request for more than you should see comes back empty rather than leaking. `can_view_order()`
 in `schema.sql` is BR-008; `supabase/README.md` states the rest in words.

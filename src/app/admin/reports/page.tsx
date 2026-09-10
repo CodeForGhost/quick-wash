@@ -37,10 +37,13 @@ function hours(value: number | null): string {
 export default async function AdminReportsPage() {
   await requireRole("ADMIN");
 
-  const orders = await listOrders({ limit: 1000 });
+  const [orders, customers, counts] = await Promise.all([
+    listOrders({ limit: 1000 }),
+    listCustomers(),
+    statusCounts(),
+  ]);
   const delivered = orders.filter((order) => order.status === "DELIVERED");
   const cancelled = orders.filter((order) => order.status === "CANCELLED");
-  const customers = await listCustomers();
 
   const repeatCustomers = customers.filter((customer) => customer.order_count > 1);
   const repeatRate = customers.length ? (repeatCustomers.length / customers.length) * 100 : 0;
@@ -74,7 +77,7 @@ export default async function AdminReportsPage() {
 
       <Card className="mb-8 p-5">
         <SectionHeading eyebrow="FR-023" title="Orders by stage" />
-        <PipelineLoad counts={await statusCounts()} />
+        <PipelineLoad counts={counts} />
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-3">

@@ -162,6 +162,69 @@ create trigger on_auth_user_created
 
 
 -- ============================================================================
+-- What the access token carries
+-- ============================================================================
+-- Working out who is asking used to cost two network calls per request: one
+-- to the Auth API to check the token, one to `users` for the role. The first
+-- is gone in the app - getClaims() verifies the ES256 signature locally. This
+-- removes the second by putting what the app needs in the token.
+--
+-- NEEDS A DASHBOARD STEP: Authentication -> Hooks -> Customize Access Token
+-- (JWT) Claims -> public.custom_access_token_hook. Without it the hook never
+-- runs and getSessionUser() falls back to the query, so the app still works -
+-- just at the old cost.
+--
+-- The claims are baked in when the token is issued, so a role change reaches
+-- an open session only when the token next refreshes. updateUser() in
+-- src/lib/repos.ts therefore ends the sessions of anyone whose role, shop or
+-- active flag changed, as it already did for a deactivation. Authorization
+-- does not rest on the token either way: RLS reads `users` through my_role(),
+-- which is always current.
+
+create or replace function public.custom_access_token_hook(event jsonb)
+returns jsonb
+language plpgsql stable
+set search_path = public
+as $$
+declare
+  claims jsonb := coalesce(event -> 'claims', '{}'::jsonb);
+  app    jsonb := coalesce(claims -> 'app_metadata', '{}'::jsonb);
+  u      record;
+begin
+  select id, name, phone, email, role, shop_id, is_active
+    into u
+    from public.users
+   where auth_id = (event ->> 'user_id')::uuid;
+
+  -- No row yet (the signup trigger runs in the same transaction as the first
+  -- token) - leave the claims alone and let the app fall back to the query.
+  if not found then
+    return event;
+  end if;
+
+  app := app || jsonb_build_object(
+    'user_id',   u.id,
+    'name',      u.name,
+    'phone',     u.phone,
+    'email',     u.email,
+    'user_role', u.role,      -- not 'role': that is Postgres's own claim
+    'shop_id',   u.shop_id,
+    'is_active', u.is_active
+  );
+
+  return jsonb_set(event, '{claims,app_metadata}', app);
+end;
+$$;
+
+-- The hook runs as supabase_auth_admin, which is outside RLS and has to be
+-- told it may read the table at all.
+grant usage on schema public to supabase_auth_admin;
+grant execute on function public.custom_access_token_hook(jsonb) to supabase_auth_admin;
+revoke execute on function public.custom_access_token_hook(jsonb) from authenticated, anon, public;
+grant select on table public.users to supabase_auth_admin;
+
+
+-- ============================================================================
 -- Predicate helpers
 -- ============================================================================
 -- All security definer, so they read past RLS. That is deliberate: a policy
@@ -261,6 +324,43 @@ $$;
 -- functions. Each is security definer and re-checks the caller: the anon key
 -- ships to the browser, so "the app already checked" is not a check.
 
+/**
+ * One order in the shape OrderWithDetails describes, or null when the caller
+ * may not see it. The write functions below return it, so nothing has to read
+ * the order back over the network after changing it.
+ *
+ * Security definer to read past RLS on the joined tables, gated on
+ * can_view_order() - which is what the RLS on those tables allows anyway: you
+ * may read anyone named on an order you can already see.
+ */
+create or replace function public.order_details(p_order_id bigint)
+returns json
+language sql stable security definer set search_path = public
+as $$
+  select to_json(d) from (
+    select o.*,
+           coalesce(c.name, '')    as customer_name,
+           coalesce(c.phone, '')   as customer_phone,
+           pa.name                 as pickup_agent_name,
+           pa.phone                as pickup_agent_phone,
+           da.name                 as delivery_agent_name,
+           s.name                  as shop_name,
+           coalesce(a.label, '')   as address_label,
+           coalesce(a.address, '') as address_line,
+           a.area                  as address_area,
+           a.landmark              as address_landmark,
+           a.phone                 as address_phone
+      from public.laundry_orders o
+      left join public.users         c  on c.id  = o.customer_id
+      left join public.users         pa on pa.id = o.pickup_agent_id
+      left join public.users         da on da.id = o.delivery_agent_id
+      left join public.laundry_shops s  on s.id  = o.laundry_shop_id
+      left join public.addresses     a  on a.id  = o.pickup_address_id
+     where o.id = p_order_id
+       and public.can_view_order(p_order_id)
+  ) d;
+$$;
+
 /** BR-002: the next order number, incremented atomically. */
 create or replace function public.next_order_number()
 returns text
@@ -290,7 +390,7 @@ create or replace function public.create_order(
   p_notes            text default null,
   p_customer_id      bigint default null
 )
-returns bigint
+returns json
 language plpgsql security definer set search_path = public
 as $$
 declare
@@ -328,7 +428,7 @@ begin
   insert into public.order_status_history (order_id, status, changed_by, notes)
   values (new_id, 'PENDING', actor, 'Pickup requested');
 
-  return new_id;
+  return public.order_details(new_id);
 end;
 $$;
 
@@ -343,7 +443,7 @@ create or replace function public.transition_order(
   p_notes     text default null,
   p_actual_bags integer default null
 )
-returns bigint
+returns json
 language plpgsql security definer set search_path = public
 as $$
 declare
@@ -372,7 +472,7 @@ begin
     end if;
   end if;
 
-  if o.status = p_to then return p_order_id; end if;
+  if o.status = p_to then return public.order_details(p_order_id); end if;
   if not public.allowed_transition(o.status, p_to) then raise exception 'BAD_TRANSITION'; end if;
 
   stamp := case p_to
@@ -397,13 +497,13 @@ begin
   insert into public.order_status_history (order_id, status, changed_by, notes)
   values (p_order_id, p_to, actor, coalesce(p_notes, p_to));
 
-  return p_order_id;
+  return public.order_details(p_order_id);
 end;
 $$;
 
 /** FR-014 / BR-010: the price and its history row together. */
 create or replace function public.set_order_price(p_order_id bigint, p_price numeric)
-returns bigint
+returns json
 language plpgsql security definer set search_path = public
 as $$
 declare
@@ -425,7 +525,7 @@ begin
   values (p_order_id, o.status, actor,
           'Price set to LKR ' || trim(to_char(p_price, 'FM999,999,990.00')));
 
-  return p_order_id;
+  return public.order_details(p_order_id);
 end;
 $$;
 
@@ -435,9 +535,11 @@ create or replace function public.assign_agent(
   p_agent_id bigint,
   p_delivery boolean default false
 )
-returns bigint
+returns json
 language plpgsql security definer set search_path = public
 as $$
+declare
+  current_status text;
 begin
   if not public.is_admin() then raise exception 'FORBIDDEN'; end if;
   if not exists (
@@ -445,6 +547,23 @@ begin
      where id = p_agent_id and role = 'PICKUP_AGENT' and is_active
   ) then
     raise exception 'AGENT_UNAVAILABLE';
+  end if;
+
+  -- The stage check lives here rather than in the caller so that reading the
+  -- status and writing the agent cannot be two separate round trips, and
+  -- cannot interleave with someone else moving the order on.
+  select status into current_status
+    from public.laundry_orders where id = p_order_id for update;
+  if not found then raise exception 'NOT_FOUND'; end if;
+
+  if p_delivery then
+    if current_status not in ('READY','OUT_FOR_DELIVERY') then
+      raise exception 'BAD_STAGE_DELIVERY';
+    end if;
+  else
+    if current_status not in ('PENDING','PICKUP_ASSIGNED') then
+      raise exception 'BAD_STAGE_PICKUP';
+    end if;
   end if;
 
   if p_delivery then
@@ -457,7 +576,7 @@ begin
      where id = p_order_id;
   end if;
 
-  return p_order_id;
+  return public.order_details(p_order_id);
 end;
 $$;
 
@@ -476,6 +595,53 @@ begin
   if public.me() is null then raise exception 'NOT_SIGNED_IN'; end if;
   insert into public.notifications (user_id, order_id, event, title, body)
   select unnest(p_user_ids), p_order_id, p_event, p_title, p_body;
+end;
+$$;
+
+/**
+ * FR-021, the recipient half. notify() used to ask `users` who the shop staff
+ * are and then hand the list back - two round trips for one notification.
+ *
+ * The recipient matrix (SRS section 19) still lives in
+ * src/lib/notification-events.ts, which is where the wording is; only "which
+ * ids is that" happens here, where the rows already are.
+ */
+create or replace function public.notify_order(
+  p_order_id   bigint,
+  p_audiences  text[],
+  p_event      text,
+  p_title      text,
+  p_body       text
+)
+returns void
+language plpgsql security definer set search_path = public
+as $$
+begin
+  if public.me() is null then raise exception 'NOT_SIGNED_IN'; end if;
+  if not exists (select 1 from public.laundry_orders where id = p_order_id) then
+    raise exception 'NOT_FOUND';
+  end if;
+
+  insert into public.notifications (user_id, order_id, event, title, body)
+  select r.id, p_order_id, p_event, p_title, p_body from (
+    select o.customer_id as id from public.laundry_orders o
+     where o.id = p_order_id and 'customer' = any (p_audiences)
+    union
+    select o.pickup_agent_id from public.laundry_orders o
+     where o.id = p_order_id and 'pickup_agent' = any (p_audiences)
+    union
+    select o.delivery_agent_id from public.laundry_orders o
+     where o.id = p_order_id and 'delivery_agent' = any (p_audiences)
+    union
+    -- Shop notifications go to every active staff member of the assigned shop;
+    -- an order not yet routed to one goes to all of them.
+    select u.id from public.users u, public.laundry_orders o
+     where o.id = p_order_id and 'shop' = any (p_audiences)
+       and u.role = 'SHOP_STAFF'
+       and u.is_active
+       and (o.laundry_shop_id is null or u.shop_id = o.laundry_shop_id)
+  ) r
+  where r.id is not null;
 end;
 $$;
 
@@ -546,6 +712,24 @@ with (security_invoker = on) as
     from public.users u
    where u.role = 'CUSTOMER';
 
+/**
+ * FR-023: the board, one row per status. statusCounts() used to select every
+ * order's status column and count the rows in JavaScript - the whole table
+ * over the wire, on a dashboard that asks for it twice.
+ */
+create or replace view order_status_counts
+with (security_invoker = on) as
+  select status, count(*)::integer as total
+    from public.laundry_orders
+   group by status;
+
+/** The same, for the "today" panel: one row per status per pickup date. */
+create or replace view order_status_counts_by_date
+with (security_invoker = on) as
+  select pickup_date, status, count(*)::integer as total
+    from public.laundry_orders
+   group by pickup_date, status;
+
 
 -- ============================================================================
 -- Row level security
@@ -587,6 +771,11 @@ create policy "users read themselves and their counterparts" on users
              end
     )
   );
+
+-- The access token hook runs as supabase_auth_admin and reads the role it is
+-- about to write into the token.
+create policy "the token hook reads users" on users
+  as permissive for select to supabase_auth_admin using (true);
 
 create policy "you edit your own profile" on users
   for update using (auth_id = auth.uid()) with check (auth_id = auth.uid());

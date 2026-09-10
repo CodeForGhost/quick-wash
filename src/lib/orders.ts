@@ -9,7 +9,6 @@ import {
   type LaundryOrder,
   type OrderStatus,
   type OrderWithDetails,
-  type Role,
   type SessionUser,
   type StatusHistoryEntry,
 } from "./types";
@@ -73,7 +72,23 @@ function fromRpc(message: string): Error {
   if (message.includes("BAD_BAG_COUNT")) return badRequest("Please enter at least one laundry bag.");
   if (message.includes("BAD_PRICE")) return badRequest("Please enter a valid price.");
   if (message.includes("AGENT_UNAVAILABLE")) return badRequest(ERRORS.agentUnavailable);
+  if (message.includes("BAD_STAGE_PICKUP")) {
+    return conflict("This order is already past the pickup stage.");
+  }
+  if (message.includes("BAD_STAGE_DELIVERY")) {
+    return conflict("Only a ready order can be assigned for delivery.");
+  }
   return new Error(message);
+}
+
+/**
+ * The write functions return the order they just wrote, in the shape
+ * OrderWithDetails describes (order_details() in schema.sql). Each of these
+ * calls used to be followed by a read of the same order over the network.
+ */
+function fromRpcRow(data: unknown): OrderWithDetails {
+  if (!data || typeof data !== "object") throw notFound();
+  return data as OrderWithDetails;
 }
 
 // --- Queries -----------------------------------------------------------------
@@ -233,21 +248,6 @@ export function assertCanView(user: SessionUser, order: LaundryOrder): void {
   if (!canViewOrder(user, order)) throw forbidden();
 }
 
-/** Which roles may move an order into a given status (SRS section 12). */
-const ROLES_FOR_STATUS: Record<OrderStatus, Role[]> = {
-  PENDING: ["ADMIN"],
-  PICKUP_ASSIGNED: ["ADMIN"],
-  PICKED_UP: ["PICKUP_AGENT", "ADMIN"],
-  AT_LAUNDRY: ["SHOP_STAFF", "ADMIN"],
-  WASHING: ["SHOP_STAFF", "ADMIN"],
-  DRYING: ["SHOP_STAFF", "ADMIN"],
-  IRONING: ["SHOP_STAFF", "ADMIN"],
-  READY: ["SHOP_STAFF", "ADMIN"],
-  OUT_FOR_DELIVERY: ["ADMIN"],
-  DELIVERED: ["PICKUP_AGENT", "ADMIN"],
-  CANCELLED: ["CUSTOMER", "ADMIN"],
-};
-
 // --- Mutations ---------------------------------------------------------------
 
 export interface CreateOrderInput {
@@ -292,7 +292,7 @@ export async function createOrder(
   });
   if (error) throw fromRpc(error.message);
 
-  const order = (await getOrder(Number(data)))!;
+  const order = fromRpcRow(data);
   await notify("NEW_ORDER", order);
   return order;
 }
@@ -300,15 +300,18 @@ export async function createOrder(
 export interface TransitionOptions {
   notes?: string | null;
   actualBagCount?: number | null;
-  /** Set when the caller has already performed its own authorization. */
-  skipAuthorization?: boolean;
 }
 
 /**
  * Moves an order to a new status, enforcing the state machine (BR-006),
- * role permissions (BR-005) and history recording (BR-007). The checks here
- * turn a bad request into a clean message; transition_order() in the schema
- * repeats them, and that is the one that cannot be bypassed.
+ * role permissions (BR-005) and history recording (BR-007).
+ *
+ * All of that happens inside transition_order(), which re-checks the caller,
+ * the state machine and BR-004 and BR-009 against the row it has just locked,
+ * and returns the order it wrote. This used to read the order first to run
+ * the same checks in TypeScript for the sake of a readable message, and read
+ * it again afterwards for the joined shape - three network calls where the
+ * schema needs one. fromRpc() turns each raise back into the same message.
  */
 export async function transitionOrder(
   orderId: number,
@@ -316,27 +319,10 @@ export async function transitionOrder(
   user: SessionUser,
   options: TransitionOptions = {},
 ): Promise<OrderWithDetails> {
-  const order = await getOrder(orderId);
-  if (!order) throw notFound();
-
-  // BR-009: a completed order can only be touched by an administrator.
-  if (order.status === "DELIVERED" && user.role !== "ADMIN") {
-    throw conflict("This order is already completed.");
-  }
-  if (!options.skipAuthorization) {
-    assertCanView(user, order);
-    if (!ROLES_FOR_STATUS[to]?.includes(user.role)) throw forbidden();
-  }
-  // BR-004: an agent may only update orders assigned to them.
-  if (user.role === "PICKUP_AGENT") {
-    const assigned = to === "DELIVERED" ? order.delivery_agent_id : order.pickup_agent_id;
-    if (assigned !== user.id) throw forbidden();
-  }
-  if (order.status === to) return order;
-  if (!canTransition(order.status, to)) throw conflict(ERRORS.invalidTransition);
+  void user; // the function reads the caller from the session, not the argument
 
   const supabase = await supabaseServer();
-  const { error } = await supabase.rpc("transition_order", {
+  const { data, error } = await supabase.rpc("transition_order", {
     p_order_id: orderId,
     p_to: to,
     p_notes: options.notes ?? STATUS_LABELS[to],
@@ -344,7 +330,7 @@ export async function transitionOrder(
   });
   if (error) throw fromRpc(error.message);
 
-  const updated = (await getOrder(orderId))!;
+  const updated = fromRpcRow(data);
   const event = EVENT_FOR_STATUS[to];
   if (event) await notify(event, updated);
   return updated;
@@ -356,26 +342,22 @@ export async function assignPickupAgent(
   agentId: number,
   admin: SessionUser,
 ): Promise<OrderWithDetails> {
-  const order = await getOrder(orderId);
-  if (!order) throw notFound();
-  if (order.status !== "PENDING" && order.status !== "PICKUP_ASSIGNED") {
-    throw conflict("This order is already past the pickup stage.");
-  }
-
   const supabase = await supabaseServer();
-  const { error } = await supabase.rpc("assign_agent", {
+  // assign_agent() rejects an order past the pickup stage itself, so the
+  // check and the write are one call and cannot land out of order.
+  const { data, error } = await supabase.rpc("assign_agent", {
     p_order_id: orderId,
     p_agent_id: agentId,
     p_delivery: false,
   });
   if (error) throw fromRpc(error.message);
 
-  if (order.status === "PENDING") {
+  const assigned = fromRpcRow(data);
+  if (assigned.status === "PENDING") {
     return transitionOrder(orderId, "PICKUP_ASSIGNED", admin, { notes: "Pickup agent assigned" });
   }
-  const updated = (await getOrder(orderId))!;
-  await notify("AGENT_ASSIGNED", updated);
-  return updated;
+  await notify("AGENT_ASSIGNED", assigned);
+  return assigned;
 }
 
 /** FR-016: assigns a delivery agent, moving READY -> OUT_FOR_DELIVERY. */
@@ -384,26 +366,20 @@ export async function assignDeliveryAgent(
   agentId: number,
   admin: SessionUser,
 ): Promise<OrderWithDetails> {
-  const order = await getOrder(orderId);
-  if (!order) throw notFound();
-  if (order.status !== "READY" && order.status !== "OUT_FOR_DELIVERY") {
-    throw conflict("Only a ready order can be assigned for delivery.");
-  }
-
   const supabase = await supabaseServer();
-  const { error } = await supabase.rpc("assign_agent", {
+  const { data, error } = await supabase.rpc("assign_agent", {
     p_order_id: orderId,
     p_agent_id: agentId,
     p_delivery: true,
   });
   if (error) throw fromRpc(error.message);
 
-  if (order.status === "READY") {
+  const assigned = fromRpcRow(data);
+  if (assigned.status === "READY") {
     return transitionOrder(orderId, "OUT_FOR_DELIVERY", admin, { notes: "Delivery agent assigned" });
   }
-  const updated = (await getOrder(orderId))!;
-  await notify("DELIVERY_ASSIGNED", updated);
-  return updated;
+  await notify("DELIVERY_ASSIGNED", assigned);
+  return assigned;
 }
 
 /** FR-014 / BR-010: shop staff and administrators set the final price. */
@@ -412,19 +388,17 @@ export async function setPrice(
   price: number,
   user: SessionUser,
 ): Promise<OrderWithDetails> {
-  const order = await getOrder(orderId);
-  if (!order) throw notFound();
-  if (user.role !== "SHOP_STAFF" && user.role !== "ADMIN") throw forbidden();
-  assertCanView(user, order);
+  void user; // set_order_price() checks the role and BR-009 against the locked row
+  // Worth catching here: NaN would reach Postgres as a null price.
   if (!Number.isFinite(price) || price < 0) throw badRequest("Please enter a valid price.");
-  if (order.status === "DELIVERED" && user.role !== "ADMIN") {
-    throw conflict("This order is already completed.");
-  }
 
   const supabase = await supabaseServer();
-  const { error } = await supabase.rpc("set_order_price", { p_order_id: orderId, p_price: price });
+  const { data, error } = await supabase.rpc("set_order_price", {
+    p_order_id: orderId,
+    p_price: price,
+  });
   if (error) throw fromRpc(error.message);
-  return (await getOrder(orderId))!;
+  return fromRpcRow(data);
 }
 
 /** Customers may cancel only before the laundry has been collected. */
@@ -442,22 +416,30 @@ export async function cancelOrder(
   }
   return transitionOrder(orderId, "CANCELLED", user, {
     notes: reason ? "Cancelled: " + reason : "Order cancelled",
-    skipAuthorization: true,
   });
 }
 
 /** FR-023: the status counts shown on the admin dashboard. */
 export async function statusCounts(pickupDate?: string): Promise<Record<string, number>> {
   const supabase = await supabaseServer();
-  let query = supabase.from("laundry_orders").select("status");
-  if (pickupDate) query = query.eq("pickup_date", pickupDate);
-  const { data, error } = await query;
+
+  // PostgREST has no GROUP BY, so the grouping is a view - as it is for
+  // agent_workload and customer_summary. This used to select the status
+  // column of every order and count the rows here, which meant dragging the
+  // whole table over the wire for eleven numbers. Both views are
+  // security_invoker, so shop staff still count only their own shop's orders.
+  // The column is `total`, not `count`: PostgREST reads a bare `count` in a
+  // select list as its own aggregate.
+  const { data, error } = pickupDate
+    ? await supabase
+        .from("order_status_counts_by_date")
+        .select("status, total")
+        .eq("pickup_date", pickupDate)
+    : await supabase.from("order_status_counts").select("status, total");
   if (error) throw error;
 
-  // PostgREST has no GROUP BY. At this size counting here is cheaper than a
-  // view per filter; if the board grows, move it into one.
   const counts: Record<string, number> = { CANCELLED: 0 };
   for (const status of ORDER_STATUSES) counts[status] = 0;
-  for (const row of data ?? []) counts[row.status] = (counts[row.status] ?? 0) + 1;
+  for (const row of data ?? []) counts[row.status] = (counts[row.status] ?? 0) + row.total;
   return counts;
 }
