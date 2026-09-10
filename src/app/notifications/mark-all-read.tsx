@@ -1,27 +1,27 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { Button } from "@/components/patterns";
+import { Button, Notice } from "@/components/patterns";
 import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 export function MarkAllRead() {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
+  const { run, busy, error } = useAction();
 
-  async function markRead() {
-    setBusy(true);
-    try {
+  function markRead() {
+    void run("mark", async () => {
       await api("/api/notifications", { method: "POST" });
-      router.refresh();
-    } finally {
-      setBusy(false);
-    }
+      // The list itself is server-rendered, so the button is only finished
+      // once the refreshed list has replaced the unread one.
+      return { refresh: true };
+    });
   }
 
   return (
-    <Button type="button" tone="quiet" onClick={markRead} disabled={busy} className="mb-6">
-      {busy ? "Marking…" : "Mark all read"}
-    </Button>
+    <div className="mb-6 space-y-3">
+      <Button type="button" tone="quiet" onClick={markRead} loading={busy}>
+        {busy ? "Marking…" : "Mark all read"}
+      </Button>
+      <Notice tone="error">{error}</Notice>
+    </div>
   );
 }

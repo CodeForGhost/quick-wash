@@ -1,32 +1,25 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Input, Notice } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 /** FR-010: record the real bag count and mark the laundry collected. */
 export function MarkPickedUp({ orderId, expectedBags }: { orderId: number; expectedBags: number }) {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [bags, setBags] = useState(expectedBags);
   const [notes, setNotes] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
+    void run("pickup", async () => {
       await api(`/api/agent/orders/${orderId}/pickup`, {
         method: "POST",
         json: { actual_bag_count: bags, notes: notes || undefined },
       });
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   return (
@@ -37,8 +30,9 @@ export function MarkPickedUp({ orderId, expectedBags }: { orderId: number; expec
           <button
             type="button"
             onClick={() => setBags((n) => Math.max(1, n - 1))}
+            disabled={busy}
             aria-label="One bag fewer"
-            className="size-11 rounded-full border border-hairline text-lg font-bold text-ink transition hover:border-ink-faint"
+            className="size-11 rounded-full border border-hairline text-lg font-bold text-ink transition hover:border-ink-faint disabled:opacity-50"
           >
             −
           </button>
@@ -46,8 +40,9 @@ export function MarkPickedUp({ orderId, expectedBags }: { orderId: number; expec
           <button
             type="button"
             onClick={() => setBags((n) => Math.min(50, n + 1))}
+            disabled={busy}
             aria-label="One bag more"
-            className="size-11 rounded-full border border-hairline text-lg font-bold text-ink transition hover:border-ink-faint"
+            className="size-11 rounded-full border border-hairline text-lg font-bold text-ink transition hover:border-ink-faint disabled:opacity-50"
           >
             +
           </button>
@@ -65,7 +60,7 @@ export function MarkPickedUp({ orderId, expectedBags }: { orderId: number; expec
 
       <Notice tone="error">{error}</Notice>
 
-      <Button type="submit" tone="accent" disabled={busy} className="w-full">
+      <Button type="submit" tone="accent" loading={busy} className="w-full">
         {busy ? "Recording…" : "Mark picked up"}
       </Button>
     </form>

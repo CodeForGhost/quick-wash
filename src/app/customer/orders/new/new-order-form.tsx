@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button, Card, Field, Input, Notice, Textarea, cx } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 import { TIME_SLOTS, type Address } from "@/lib/types";
 
 /** The next seven days, so the customer picks a day rather than typing a date. */
@@ -14,48 +14,98 @@ function upcomingDays(count = 7) {
     const value = date.toISOString().slice(0, 10);
     return {
       value,
+      today: index === 0,
       weekday: index === 0 ? "Today" : index === 1 ? "Tomorrow" : date.toLocaleDateString("en-GB", { weekday: "short" }),
       day: date.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }),
     };
   });
 }
 
+/** Minutes past midnight that a slot opens, read off its "08:00 AM - 10:00 AM" label. */
+function slotOpensAt(slot: string): number {
+  const match = /^(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(slot);
+  if (!match) return 0; // A label we cannot read stays on offer rather than vanishing.
+  const [, hour, minute, meridiem] = match;
+  const hours = (Number(hour) % 12) + (meridiem.toUpperCase() === "PM" ? 12 : 0);
+  return hours * 60 + Number(minute);
+}
+
+/**
+ * The windows still worth offering on a given day. A window that has already
+ * opened cannot be collected in, so today loses its slots as the day goes on
+ * and every other day keeps all five.
+ *
+ * `now` is null until the component has mounted: the cut-off depends on the
+ * reader's clock, which the server does not share, so the server-rendered
+ * first paint offers everything and the browser narrows it.
+ */
+function slotsOn(day: { today: boolean }, now: number | null): readonly string[] {
+  if (!day.today || now === null) return TIME_SLOTS;
+  return TIME_SLOTS.filter((slot) => slotOpensAt(slot) > now);
+}
+
+/** Minutes past midnight, on the reader's clock, re-read each minute. */
+function useMinutesIntoDay(): number | null {
+  const [minutes, setMinutes] = useState<number | null>(null);
+
+  useEffect(() => {
+    function read() {
+      const now = new Date();
+      setMinutes(now.getHours() * 60 + now.getMinutes());
+    }
+    read();
+    // A form left open long enough to outlast a window must not offer it.
+    const timer = setInterval(read, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  return minutes;
+}
+
 /** FR-005: the pickup request form. */
 export function NewOrderForm({ addresses }: { addresses: Address[] }) {
-  const router = useRouter();
-  const days = upcomingDays();
+  const { run, busy, error } = useAction();
+  const minutes = useMinutesIntoDay();
 
   const [addressId, setAddressId] = useState(addresses[0]?.id ?? 0);
-  const [pickupDate, setPickupDate] = useState(days[0].value);
+  const [pickupDate, setPickupDate] = useState(() => upcomingDays(1)[0].value);
   const [slot, setSlot] = useState<string>(TIME_SLOTS[0]);
   const [bags, setBags] = useState(1);
   const [items, setItems] = useState("");
   const [notes, setNotes] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  // Today drops out of the picker entirely once its last window has opened,
+  // rather than offering a day with nothing bookable on it.
+  const days = useMemo(
+    () => upcomingDays().filter((day) => slotsOn(day, minutes).length > 0),
+    [minutes],
+  );
+
+  // What is actually chosen, which is not always what was clicked: a window
+  // can open - or today can run out - while the form is sitting there. Deriving
+  // it rather than storing it means the request can never carry a stale slot.
+  const chosenDay = days.find((day) => day.value === pickupDate) ?? days[0];
+  const slots = chosenDay ? slotsOn(chosenDay, minutes) : TIME_SLOTS;
+  const chosenSlot = slots.includes(slot) ? slot : slots[0];
+
+  function submit(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
+    void run("request", async () => {
       const order = await api<{ id: number }>("/api/orders", {
         method: "POST",
         json: {
           address_id: addressId,
-          pickup_date: pickupDate,
-          pickup_time_slot: slot,
+          pickup_date: chosenDay?.value ?? pickupDate,
+          pickup_time_slot: chosenSlot,
           bag_count: bags,
           item_count: items ? Number(items) : null,
           notes: notes || undefined,
         },
       });
-      router.replace(`/customer/orders/${order.id}?created=1`);
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-      setBusy(false);
-    }
+      // Still busy: the request is placed, but the confirmation screen it
+      // navigates to is what tells the customer so.
+      return { replace: `/customer/orders/${order.id}?created=1`, refresh: true };
+    });
   }
 
   return (
@@ -98,10 +148,10 @@ export function NewOrderForm({ addresses }: { addresses: Address[] }) {
               key={day.value}
               type="button"
               onClick={() => setPickupDate(day.value)}
-              aria-pressed={pickupDate === day.value}
+              aria-pressed={chosenDay?.value === day.value}
               className={cx(
                 "min-w-20 shrink-0 rounded-xl border px-3 py-2.5 text-center transition",
-                pickupDate === day.value
+                chosenDay?.value === day.value
                   ? "border-ink bg-ink text-white"
                   : "border-hairline text-ink hover:border-ink-faint",
               )}
@@ -114,21 +164,26 @@ export function NewOrderForm({ addresses }: { addresses: Address[] }) {
 
         <p className="eyebrow mb-3 mt-6">Time window</p>
         <div className="grid gap-2 sm:grid-cols-2">
-          {TIME_SLOTS.map((option) => (
+          {slots.map((option) => (
             <button
               key={option}
               type="button"
               onClick={() => setSlot(option)}
-              aria-pressed={slot === option}
+              aria-pressed={chosenSlot === option}
               className={cx(
                 "tabular rounded-xl border px-3 py-2.5 text-sm font-medium transition",
-                slot === option ? "border-lagoon bg-lagoon-soft text-lagoon-deep" : "border-hairline text-ink hover:border-ink-faint",
+                chosenSlot === option ? "border-lagoon bg-lagoon-soft text-lagoon-deep" : "border-hairline text-ink hover:border-ink-faint",
               )}
             >
               {option}
             </button>
           ))}
         </div>
+        {chosenDay?.today && slots.length < TIME_SLOTS.length ? (
+          <p className="mt-2 text-xs text-ink-faint">
+            Earlier windows today have already opened. Pick another day for those.
+          </p>
+        ) : null}
       </Card>
 
       <Card className="space-y-4 p-5">
@@ -182,7 +237,7 @@ export function NewOrderForm({ addresses }: { addresses: Address[] }) {
       <Notice tone="error">{error}</Notice>
 
       <div className="flex gap-3">
-        <Button type="submit" tone="accent" disabled={busy} className="flex-1 sm:flex-none">
+        <Button type="submit" tone="accent" loading={busy} className="flex-1 sm:flex-none">
           {busy ? "Sending your request…" : "Request pickup"}
         </Button>
       </div>

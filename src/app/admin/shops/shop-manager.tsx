@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card, Field, Input, Notice, SectionHeading, Textarea, cx } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 import type { LaundryShop } from "@/lib/types";
 
 type Draft = { name: string; phone: string; address: string; is_active: boolean };
@@ -12,11 +12,9 @@ const EMPTY: Draft = { name: "", phone: "", address: "", is_active: true };
 
 /** FR-026: add, edit and deactivate shops. */
 export function ShopManager({ shops }: { shops: LaundryShop[] }) {
-  const router = useRouter();
+  const { run, busy, error, setError } = useAction();
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
   function startNew() {
     setDraft(EMPTY);
@@ -35,23 +33,17 @@ export function ShopManager({ shops }: { shops: LaundryShop[] }) {
     setError("");
   }
 
-  async function save(event: React.FormEvent) {
+  function save(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
+    void run("save", async () => {
       if (editing === "new") {
         await api("/api/admin/shops", { method: "POST", json: draft });
       } else if (typeof editing === "number") {
         await api(`/api/admin/shops/${editing}`, { method: "PUT", json: draft });
       }
       setEditing(null);
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   const form = (
@@ -98,7 +90,7 @@ export function ShopManager({ shops }: { shops: LaundryShop[] }) {
         <Notice tone="error">{error}</Notice>
 
         <div className="flex gap-2">
-          <Button type="submit" tone="accent" disabled={busy}>
+          <Button type="submit" tone="accent" loading={busy}>
             {busy ? "Saving…" : "Save shop"}
           </Button>
           <Button type="button" tone="quiet" onClick={() => setEditing(null)} disabled={busy}>

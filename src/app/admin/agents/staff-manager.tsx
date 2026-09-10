@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import {
   Button,
@@ -14,9 +13,11 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  Spinner,
   cx,
 } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 interface Agent {
   id: number;
@@ -48,20 +49,18 @@ export function StaffManager({
   staff: Staff[];
   shops: Array<{ id: number; name: string }>;
 }) {
-  const router = useRouter();
+  // One screen, many buttons: the key says which one is working, so toggling a
+  // single agent does not put the whole roster into a loading state.
+  const { run, busy, isBusy, error } = useAction();
   const [role, setRole] = useState<"PICKUP_AGENT" | "SHOP_STAFF">("PICKUP_AGENT");
   const [open, setOpen] = useState(false);
-  const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function create(event: React.FormEvent<HTMLFormElement>) {
+  function create(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    setBusy(true);
-    setError("");
     setSaved("");
-    try {
+    void run("create", async () => {
       await api("/api/admin/agents", {
         method: "POST",
         json: {
@@ -75,25 +74,15 @@ export function StaffManager({
       });
       setSaved(role === "PICKUP_AGENT" ? "Agent added." : "Shop staff added.");
       setOpen(false);
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
-  async function toggle(id: number, isActive: boolean) {
-    setBusy(true);
-    setError("");
-    try {
+  function toggle(id: number, isActive: boolean) {
+    void run(`toggle:${id}`, async () => {
       await api(`/api/admin/agents/${id}`, { method: "PATCH", json: { is_active: !isActive } });
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   return (
@@ -165,8 +154,8 @@ export function StaffManager({
 
             <Notice tone="error">{error}</Notice>
 
-            <Button type="submit" disabled={busy}>
-              {busy ? "Creating…" : "Create account"}
+            <Button type="submit" loading={isBusy("create")} disabled={busy}>
+              {isBusy("create") ? "Creating…" : "Create account"}
             </Button>
           </form>
         </Card>
@@ -186,13 +175,15 @@ export function StaffManager({
                   type="button"
                   onClick={() => toggle(agent.id, agent.is_active)}
                   disabled={busy}
+                  aria-busy={isBusy(`toggle:${agent.id}`) || undefined}
                   className={cx(
-                    "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition disabled:opacity-50",
+                    "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition disabled:opacity-50 aria-busy:opacity-100",
                     agent.is_active
                       ? "border-hairline text-ink-soft hover:border-flag hover:text-flag"
                       : "border-flag/30 bg-flag-soft text-flag",
                   )}
                 >
+                  {isBusy(`toggle:${agent.id}`) ? <Spinner aria-hidden data-icon="inline-start" className="size-3 shrink-0" /> : null}
                   {agent.is_active ? "Deactivate" : "Reactivate"}
                 </button>
               </div>
@@ -231,13 +222,15 @@ export function StaffManager({
                 type="button"
                 onClick={() => toggle(member.id, member.is_active)}
                 disabled={busy}
+                aria-busy={isBusy(`toggle:${member.id}`) || undefined}
                 className={cx(
-                  "shrink-0 rounded-full border px-3 py-1 text-xs font-semibold transition disabled:opacity-50",
+                  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition disabled:opacity-50 aria-busy:opacity-100",
                   member.is_active
                     ? "border-hairline text-ink-soft hover:border-flag hover:text-flag"
                     : "border-flag/30 bg-flag-soft text-flag",
                 )}
               >
+                {isBusy(`toggle:${member.id}`) ? <Spinner aria-hidden data-icon="inline-start" className="size-3 shrink-0" /> : null}
                 {member.is_active ? "Deactivate" : "Reactivate"}
               </button>
             </div>

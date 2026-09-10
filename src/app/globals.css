@@ -131,6 +131,27 @@
 
 @layer components {
   /*
+    The horizontal page gutter. `viewport-fit=cover` lets content run under the
+    notch in landscape, so the gutter is whichever is larger: the design's 1rem
+    or whatever the device needs. Bars keep their background full-bleed and put
+    this on their inner container, so the colour still reaches both edges.
+  */
+  .gutter {
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+  }
+
+  /*
+    iOS repaints a sticky bar badly when it also carries a backdrop filter -
+    it blanks out mid-scroll and comes back when the finger lifts. Giving it
+    its own compositing layer is what settles it.
+  */
+  .sticky-bar {
+    transform: translateZ(0);
+    -webkit-transform: translateZ(0);
+  }
+
+  /*
     Manrope at display size. Tracking is left to the utility on the element
     (titles carry `tracking-tighter`) so it can be tuned per size.
   */
@@ -163,6 +184,19 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /*
+   * The spinner is the exception, and it has to be. The rule above is meant for
+   * decoration; applied to a spinner it runs one 0.01ms rotation and leaves it
+   * frozen mid-turn, which reads as a hung screen at exactly the moment the app
+   * is asking for patience. Motion is the whole content here, so it keeps
+   * turning - slower, because a small steady rotation is not what
+   * reduce-motion is protecting against.
+   */
+  [data-slot="spinner"] {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 

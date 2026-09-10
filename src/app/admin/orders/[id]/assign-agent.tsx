@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card, EmptyState, Notice, SectionHeading, cx } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 interface AgentOption {
   id: number;
@@ -27,25 +27,19 @@ export function AssignAgent({
   agents: AgentOption[];
   current: number | null;
 }) {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [selected, setSelected] = useState(current ?? agents[0]?.id ?? 0);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function assign() {
-    setBusy(true);
-    setError("");
-    try {
+  function assign() {
+    void run("assign", async () => {
       await api(`/api/admin/orders/${orderId}/assign-agent`, {
         method: "POST",
         json: { agent_id: selected, type },
       });
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      // Assigning also notifies the customer; hold the button until the order
+      // page comes back showing who it went to.
+      return { refresh: true };
+    });
   }
 
   const heading = type === "pickup" ? "Assign a pickup agent" : "Assign a delivery agent";
@@ -105,7 +99,14 @@ export function AssignAgent({
             <Notice tone="error">{error}</Notice>
           </div>
 
-          <Button type="button" tone="accent" onClick={assign} disabled={busy || !selected} className="mt-4 w-full">
+          <Button
+            type="button"
+            tone="accent"
+            onClick={assign}
+            loading={busy}
+            disabled={!selected}
+            className="mt-4 w-full"
+          >
             {busy ? "Assigning…" : action}
           </Button>
         </>

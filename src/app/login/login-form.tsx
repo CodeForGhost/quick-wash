@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { api, messageFrom } from "@/lib/client";
-import { Button, Field, Input, Notice } from "@/components/patterns";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
+import { Button, Field, Input, Notice, Spinner } from "@/components/patterns";
 import type { Role } from "@/lib/types";
 
 const HOME: Record<Role, string> = {
@@ -22,26 +22,23 @@ const DEMO = [
 ];
 
 export function LoginForm() {
-  const router = useRouter();
+  const { run, busy, isBusy, error } = useAction();
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function signIn(withPhone: string, withPassword: string) {
-    setBusy(true);
-    setError("");
-    try {
+  /**
+   * `key` is the control that was pressed - the form, or one of the demo
+   * chips - so only that one spins while the sign-in lands and the role's
+   * home screen is fetched.
+   */
+  function signIn(key: string, withPhone: string, withPassword: string) {
+    return run(key, async () => {
       const user = await api<{ role: Role }>("/api/auth/login", {
         method: "POST",
         json: { phone: withPhone, password: withPassword },
       });
-      router.replace(HOME[user.role]);
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-      setBusy(false);
-    }
+      return { replace: HOME[user.role], refresh: true };
+    });
   }
 
   return (
@@ -50,7 +47,7 @@ export function LoginForm() {
         className="space-y-4"
         onSubmit={(event) => {
           event.preventDefault();
-          void signIn(phone, password);
+          void signIn("form", phone, password);
         }}
       >
         <Field label="Mobile number" required>
@@ -80,8 +77,8 @@ export function LoginForm() {
 
         <Notice tone="error">{error}</Notice>
 
-        <Button type="submit" disabled={busy} className="w-full">
-          {busy ? "Signing in…" : "Sign in"}
+        <Button type="submit" loading={isBusy("form")} disabled={busy} className="w-full">
+          {isBusy("form") ? "Signing in…" : "Sign in"}
         </Button>
       </form>
 
@@ -97,13 +94,15 @@ export function LoginForm() {
               key={account.phone}
               type="button"
               disabled={busy}
+              aria-busy={isBusy(`demo:${account.phone}`) || undefined}
               onClick={() => {
                 setPhone(account.phone);
                 setPassword("password123");
-                void signIn(account.phone, "password123");
+                void signIn(`demo:${account.phone}`, account.phone, "password123");
               }}
-              className="rounded-full border border-hairline px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-lagoon hover:text-lagoon disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-full border border-hairline px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-lagoon hover:text-lagoon disabled:opacity-50 aria-busy:border-lagoon aria-busy:text-lagoon aria-busy:opacity-100"
             >
+              {isBusy(`demo:${account.phone}`) ? <Spinner aria-hidden data-icon="inline-start" className="size-3 shrink-0" /> : null}
               {account.label}
             </button>
           ))}

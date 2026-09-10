@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Button, Card, EmptyState, Field, Input, Notice, Textarea } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { Button, Card, EmptyState, Field, Input, Notice, Spinner, Textarea } from "@/components/patterns";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 import type { Address } from "@/lib/types";
 
 type Draft = {
@@ -18,12 +18,10 @@ const EMPTY: Draft = { label: "Home", address: "", area: "", landmark: "", phone
 
 /** FR-004: add, edit and remove saved addresses. */
 export function AddressBook({ initial, defaultPhone }: { initial: Address[]; defaultPhone: string }) {
-  const router = useRouter();
+  const { run, busy, isBusy, error, setError } = useAction();
   const [addresses, setAddresses] = useState(initial);
   const [editing, setEditing] = useState<number | "new" | null>(initial.length === 0 ? "new" : null);
   const [draft, setDraft] = useState<Draft>({ ...EMPTY, phone: defaultPhone });
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
   function startNew() {
     setDraft({ ...EMPTY, phone: defaultPhone });
@@ -43,11 +41,9 @@ export function AddressBook({ initial, defaultPhone }: { initial: Address[]; def
     setError("");
   }
 
-  async function save(event: React.FormEvent) {
+  function save(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
+    void run("save", async () => {
       if (editing === "new") {
         const created = await api<Address>("/api/customers/addresses", { method: "POST", json: draft });
         setAddresses((list) => [...list, created]);
@@ -56,26 +52,17 @@ export function AddressBook({ initial, defaultPhone }: { initial: Address[]; def
         setAddresses((list) => list.map((item) => (item.id === updated.id ? updated : item)));
       }
       setEditing(null);
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
-  async function remove(id: number) {
-    setBusy(true);
-    setError("");
-    try {
+  /** Keyed by row: only the address being removed shows a spinner. */
+  function remove(id: number) {
+    void run(`remove:${id}`, async () => {
       await api(`/api/customers/addresses/${id}`, { method: "DELETE" });
       setAddresses((list) => list.filter((item) => item.id !== id));
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   const form = (
@@ -131,8 +118,8 @@ export function AddressBook({ initial, defaultPhone }: { initial: Address[]; def
         <Notice tone="error">{error}</Notice>
 
         <div className="flex gap-2">
-          <Button type="submit" tone="accent" disabled={busy}>
-            {busy ? "Saving…" : "Save address"}
+          <Button type="submit" tone="accent" loading={isBusy("save")} disabled={busy}>
+            {isBusy("save") ? "Saving…" : "Save address"}
           </Button>
           {addresses.length > 0 ? (
             <Button type="button" tone="quiet" onClick={() => setEditing(null)} disabled={busy}>
@@ -185,9 +172,11 @@ export function AddressBook({ initial, defaultPhone }: { initial: Address[]; def
                   type="button"
                   onClick={() => remove(address.id)}
                   disabled={busy}
-                  className="text-sm font-semibold text-ink-faint underline underline-offset-4 hover:text-flag"
+                  aria-busy={isBusy(`remove:${address.id}`) || undefined}
+                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-ink-faint underline underline-offset-4 hover:text-flag disabled:no-underline disabled:opacity-50 aria-busy:text-flag aria-busy:opacity-100"
                 >
-                  Remove
+                  {isBusy(`remove:${address.id}`) ? <Spinner aria-hidden data-icon="inline-start" className="size-3.5 shrink-0" /> : null}
+                  {isBusy(`remove:${address.id}`) ? "Removing…" : "Remove"}
                 </button>
               </div>
             </div>

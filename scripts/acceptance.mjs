@@ -250,16 +250,6 @@ const main = async () => {
   r = await call("nobody", `/api/orders/${id}`);
   check("an unauthenticated request is rejected (401)", r.status === 401, `status ${r.status}`);
 
-  console.log("\n--- Batch routes (FR-022) ---");
-  const pending = await call("admin", "/api/admin/orders?status=PENDING");
-  const orderIds = (pending.body?.data?.orders ?? []).slice(0, 3).map((o) => o.id);
-  const route = await call("admin", "/api/admin/routes", {
-    method: "POST",
-    body: JSON.stringify({ agent_id: agentId, route_date: today, name: "Acceptance round", order_ids: orderIds }),
-  });
-  check("a route batches several pickups", route.status === 201 || route.status === 200, route.body?.error);
-  check("the route reports its stop count", route.body?.data?.order_count === orderIds.length,
-    `${route.body?.data?.order_count} of ${orderIds.length}`);
 
   console.log("\n--- Reports and counts (FR-023) ---");
   // The owner gets their code; anyone else gets nothing at all.

@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card, Field, Input, Notice, SectionHeading } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 const FIELDS = [
   { key: "business_name", label: "Business name", hint: "Shown to customers.", placeholder: "QuickWash" },
@@ -18,28 +18,20 @@ const FIELDS = [
 ] as const;
 
 export function SettingsForm({ settings }: { settings: Record<string, string> }) {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(FIELDS.map((field) => [field.key, settings[field.key] ?? ""])),
   );
-  const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
     setSaved("");
-    try {
+    void run("save", async () => {
       await api("/api/admin/settings", { method: "PUT", json: values });
       setSaved("Settings saved.");
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   return (
@@ -59,7 +51,7 @@ export function SettingsForm({ settings }: { settings: Record<string, string> })
         <Notice tone="error">{error}</Notice>
         <Notice tone="success">{saved}</Notice>
 
-        <Button type="submit" disabled={busy}>
+        <Button type="submit" loading={busy}>
           {busy ? "Saving…" : "Save settings"}
         </Button>
       </form>

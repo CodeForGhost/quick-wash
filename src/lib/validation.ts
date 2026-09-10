@@ -108,13 +108,6 @@ export const shopSchema = z.object({
   is_active: z.coerce.boolean().optional(),
 });
 
-export const routeSchema = z.object({
-  name: z.string().trim().max(60).optional().or(z.literal("")),
-  agent_id: z.coerce.number().int().positive("Please choose an agent."),
-  route_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Please select a valid date."),
-  order_ids: z.array(z.coerce.number().int().positive()).min(1, "Select at least one order for the route."),
-});
-
 export const statusFilterSchema = z.enum(ORDER_STATUSES);
 
 /** Turns a ZodError into the first human-readable message. */

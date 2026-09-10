@@ -8,6 +8,8 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button as ShadButton } from "@/components/ui/button";
 import { Card as ShadCard } from "@/components/ui/card";
+import { Spinner } from "@/components/ui/spinner";
+import { LinkSpinner } from "./pending";
 
 /**
  * QuickWash screen patterns, composed from the shadcn/ui primitives in
@@ -26,6 +28,7 @@ export {
   SelectValue,
 } from "@/components/ui/select";
 export { Skeleton } from "@/components/ui/skeleton";
+export { Spinner } from "@/components/ui/spinner";
 export { Separator } from "@/components/ui/separator";
 export {
   Table,
@@ -127,23 +130,50 @@ export type ButtonTone = keyof typeof TONE_VARIANT;
 /* Pills, at 44px, are the QuickWash button shape everywhere. */
 const BUTTON_SHAPE = "h-11 rounded-full px-5 text-sm font-semibold";
 
+/**
+ * `loading` is the one way a button says it is working: a spinner, `aria-busy`
+ * for anyone listening, and no second submit. Pair it with a label that names
+ * the work ("Saving…") - the spinner says something is happening, the label
+ * says what.
+ */
 export function Button({
   tone = "primary",
+  loading = false,
+  disabled,
   className,
+  children,
   ...props
-}: Omit<ComponentProps<typeof ShadButton>, "variant"> & { tone?: ButtonTone }) {
+}: Omit<ComponentProps<typeof ShadButton>, "variant"> & { tone?: ButtonTone; loading?: boolean }) {
   return (
     <ShadButton
       variant={TONE_VARIANT[tone]}
-      className={cn(BUTTON_SHAPE, tone === "quiet" && "border-hairline text-ink hover:bg-ground hover:text-ink", className)}
+      aria-busy={loading || undefined}
+      disabled={disabled || loading}
+      className={cn(
+        BUTTON_SHAPE,
+        tone === "quiet" && "border-hairline text-ink hover:bg-ground hover:text-ink",
+        // A working button is not a dead one: hold it at full strength so the
+        // spinner reads as progress rather than as a control that switched off.
+        loading && "disabled:opacity-100",
+        className,
+      )}
       {...props}
-    />
+    >
+      {loading ? <Spinner aria-hidden data-icon="inline-start" /> : null}
+      {children}
+    </ShadButton>
   );
 }
 
+/**
+ * A link shaped like a button. It spins while the page it points at is being
+ * fetched, so a call to action on a phone answers the tap rather than waiting
+ * silently for the new screen.
+ */
 export function ButtonLink({
   tone = "primary",
   className,
+  children,
   ...props
 }: ComponentProps<typeof Link> & { tone?: ButtonTone }) {
   return (
@@ -152,7 +182,10 @@ export function ButtonLink({
       variant={TONE_VARIANT[tone]}
       className={cn(BUTTON_SHAPE, tone === "quiet" && "border-hairline text-ink hover:bg-ground hover:text-ink", className)}
     >
-      <Link {...props} />
+      <Link {...props}>
+        <LinkSpinner data-icon="inline-start" />
+        {children}
+      </Link>
     </ShadButton>
   );
 }

@@ -1,24 +1,19 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 import { Button, Field, Input, Notice, Textarea } from "@/components/patterns";
 
 /** FR-001: registration, with the first pickup address captured up front. */
 export function RegisterForm() {
-  const router = useRouter();
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const { run, busy, error } = useAction();
 
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
+  function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const addressText = String(form.get("address") ?? "").trim();
 
-    setBusy(true);
-    setError("");
-    try {
+    void run("register", async () => {
       await api("/api/auth/register", {
         method: "POST",
         json: {
@@ -36,12 +31,9 @@ export function RegisterForm() {
             : undefined,
         },
       });
-      router.replace("/customer");
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-      setBusy(false);
-    }
+      // The button keeps spinning until the customer home screen is on screen.
+      return { replace: "/customer", refresh: true };
+    });
   }
 
   return (
@@ -82,7 +74,7 @@ export function RegisterForm() {
 
       <Notice tone="error">{error}</Notice>
 
-      <Button type="submit" disabled={busy} className="w-full">
+      <Button type="submit" loading={busy} className="w-full">
         {busy ? "Creating your account…" : "Create account"}
       </Button>
     </form>

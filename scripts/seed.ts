@@ -133,8 +133,6 @@ const EVENT_FOR_STATUS: Partial<Record<Status, NotificationEvent>> = {
 async function wipe(): Promise<void> {
   // FK order. The service role bypasses RLS, which is the point of using it.
   for (const table of [
-    "route_orders",
-    "pickup_routes",
     "notifications",
     "order_status_history",
     "laundry_orders",

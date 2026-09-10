@@ -1,31 +1,24 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Input, Notice } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 /** FR-017: close the loop - the laundry is back with the customer. */
 export function MarkDelivered({ orderId }: { orderId: number }) {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [notes, setNotes] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
+    void run("deliver", async () => {
       await api(`/api/agent/orders/${orderId}/deliver`, {
         method: "POST",
         json: { notes: notes || undefined },
       });
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   return (
@@ -36,7 +29,7 @@ export function MarkDelivered({ orderId }: { orderId: number }) {
         onChange={(event) => setNotes(event.target.value)}
       />
       <Notice tone="error">{error}</Notice>
-      <Button type="submit" tone="accent" disabled={busy} className="w-full">
+      <Button type="submit" tone="accent" loading={busy} className="w-full">
         {busy ? "Recording…" : "Mark delivered"}
       </Button>
     </form>

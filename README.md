@@ -70,7 +70,7 @@ src/
     auth.ts          who is signed in, and requireUser()
     types.ts         roles, the ten order statuses, domain records
     orders.ts        the state machine and business rules BR-001..BR-010
-    repos.ts         users, addresses, shops, routes, settings
+    repos.ts         users, addresses, shops, settings
     notifications.ts the SRS section 19 fan-out
     notification-events.ts  the recipient matrix, shared with the seeder
     validation.ts    zod schemas for every request body
@@ -112,7 +112,7 @@ supabase/
   insert, so two simultaneous requests cannot take the same number.
 
 PostgREST has no client-side transaction, so the writes that must land together are Postgres
-functions: `create_order`, `transition_order`, `set_order_price`, `create_route`. Each one is
+functions: `create_order`, `transition_order`, `set_order_price`. Each one is
 `security definer` and **re-checks the caller** - the anon key ships to the browser, so "the app
 already checked" is not a check. The transition table and the role map therefore exist twice, in
 `src/lib/orders.ts` and in `schema.sql`; the first shapes the UI, the second is the one that
@@ -184,7 +184,7 @@ search, a price of `1234.56` surviving as a number, and status history. **47/47.
 **`test:rls`** talks straight to PostgREST with the anon key - the same key that ships to the
 browser - as a signed-in customer, with the app taken out of the way. It tries what someone with
 a developer console would try: read another customer's order, forge a history row, write a
-notification to somebody else, jump an order to `DELIVERED`, plan a route, set their own price,
+notification to somebody else, jump an order to `DELIVERED`, set their own price,
 make themselves an administrator. **21/21.**
 
 That last one is why the suite exists. Its first run found that a customer could promote
@@ -201,14 +201,15 @@ a signed-out visitor with a 307, and the role guards redirect correctly.
 
 In scope and built: registration and login, profile, addresses, pickup requests, order creation
 and tracking, agent assignment and pickup, shop processing and pricing, delivery, order and status
-history, QR codes, in-app notifications, batch pickup routes, and the admin dashboard, customer,
-agent, shop, route, report and settings screens.
+history, QR codes, in-app notifications, and the admin dashboard, customer, agent, shop, report
+and settings screens.
 
 Deliberately not built, per SRS section 5.2: AI classification, route optimisation, GPS tracking,
 online payments, subscriptions, loyalty, multiple cities, and native apps. Section 24 lists these
 as the path after the model is validated.
 
-One gap worth naming: the reports screen cannot compute contribution margin, because pickup and
-delivery cost per order are not captured anywhere in the system. Recording an agent's cost per
-round against `pickup_routes` would close it - that is the third of the three metrics SRS section
-23 calls most important.
+Two gaps worth naming. FR-022 (batch pickup routes) was built and then removed on request, so
+orders per pickup route - the second of the three metrics SRS section 23 calls most important -
+is no longer measured; agents are assigned one order at a time. And the reports screen cannot
+compute contribution margin, because pickup and delivery cost per order are not captured
+anywhere in the system - that is the third of those metrics.

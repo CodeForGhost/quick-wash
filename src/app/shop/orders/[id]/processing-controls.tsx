@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card, Field, Input, Notice, SectionHeading, cx } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 import { formatPrice } from "@/lib/format";
 import { SHOP_STATUSES, STATUS_LABELS, type OrderStatus } from "@/lib/types";
 
@@ -37,47 +37,36 @@ export function ProcessingControls({
   price: number | null;
   itemCount: number | null;
 }) {
-  const router = useRouter();
+  // Two independent actions on one screen, so the busy state is keyed: setting
+  // the price must not make the stage button look like it is advancing.
+  const { run, busy, isBusy, error } = useAction();
   const [priceInput, setPriceInput] = useState(price ? String(price) : "");
-  const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
-  const [busy, setBusy] = useState(false);
 
   const next = NEXT[status];
   const stage = SHOP_STATUSES.indexOf(status as (typeof SHOP_STATUSES)[number]);
 
-  async function advance() {
+  function advance() {
     if (!next) return;
-    setBusy(true);
-    setError("");
     setSaved("");
-    try {
+    void run("advance", async () => {
       await api(`/api/shop/orders/${orderId}/status`, { method: "PATCH", json: { status: next } });
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      // The stage rail above is server-rendered: hold the spinner until it moves.
+      return { refresh: true };
+    });
   }
 
-  async function savePrice(event: React.FormEvent) {
+  function savePrice(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
     setSaved("");
-    try {
+    void run("price", async () => {
       await api(`/api/shop/orders/${orderId}/price`, {
         method: "PATCH",
         json: { price: Number(priceInput) },
       });
       setSaved("Price saved. The customer can see it now.");
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   return (
@@ -109,8 +98,15 @@ export function ProcessingControls({
         </ol>
 
         {next ? (
-          <Button type="button" tone="accent" onClick={advance} disabled={busy} className="w-full">
-            {busy ? "Updating…" : ACTION_LABEL[next]}
+          <Button
+            type="button"
+            tone="accent"
+            onClick={advance}
+            loading={isBusy("advance")}
+            disabled={busy}
+            className="w-full"
+          >
+            {isBusy("advance") ? "Updating…" : ACTION_LABEL[next]}
           </Button>
         ) : status === "READY" ? (
           <p className="rounded-xl bg-lagoon-soft px-4 py-3 text-sm font-medium text-lagoon-deep">
@@ -153,8 +149,8 @@ export function ProcessingControls({
           <Notice tone="success">{saved}</Notice>
 
           <div className="flex items-center gap-3">
-            <Button type="submit" disabled={busy || priceInput === ""}>
-              {busy ? "Saving…" : price ? "Update price" : "Set price"}
+            <Button type="submit" loading={isBusy("price")} disabled={busy || priceInput === ""}>
+              {isBusy("price") ? "Saving…" : price ? "Update price" : "Set price"}
             </Button>
             {price ? (
               <span className="tabular text-sm text-ink-soft">Currently {formatPrice(price)}</span>

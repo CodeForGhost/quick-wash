@@ -1,34 +1,26 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card, Field, Input, Notice } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 /** FR-003: view and edit your own profile. */
 export function ProfileForm({ user }: { user: { name: string; phone: string; email: string | null } }) {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [name, setName] = useState(user.name);
   const [phone, setPhone] = useState(user.phone);
   const [email, setEmail] = useState(user.email ?? "");
-  const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
-    setBusy(true);
-    setError("");
     setSaved("");
-    try {
+    void run("save", async () => {
       await api("/api/customers/profile", { method: "PUT", json: { name, phone, email } });
       setSaved("Profile saved.");
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   return (
@@ -55,7 +47,7 @@ export function ProfileForm({ user }: { user: { name: string; phone: string; ema
         <Notice tone="error">{error}</Notice>
         <Notice tone="success">{saved}</Notice>
 
-        <Button type="submit" disabled={busy}>
+        <Button type="submit" loading={busy}>
           {busy ? "Saving…" : "Save changes"}
         </Button>
       </form>

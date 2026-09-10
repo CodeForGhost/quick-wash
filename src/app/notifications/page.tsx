@@ -20,7 +20,7 @@ export default async function NotificationsPage() {
   const orderPath = user.role === "CUSTOMER" ? "/customer/orders/" : "/admin/orders/";
 
   return (
-    <div className="min-h-dvh">
+    <div className="min-h-svh">
       <header className="border-b border-hairline bg-surface">
         <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3">
           <Link href={HOME[user.role]} className="flex items-center gap-2.5">

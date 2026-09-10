@@ -4,10 +4,10 @@ import { supabaseAdmin } from "./supabase/admin";
 import { phoneToAuthEmail } from "./supabase/env";
 import { badRequest, conflict, notFound } from "./errors";
 import { normalisePhone } from "./validation";
-import type { Address, LaundryShop, PickupRoute, Role, RouteOrder, User } from "./types";
+import type { Address, LaundryShop, Role, User } from "./types";
 
 /**
- * Users, addresses, shops, routes and settings.
+ * Users, addresses, shops and settings.
  *
  * Row level security does the real enforcement: each call runs as the
  * signed-in person, so a query that asks for more than it should comes back
@@ -383,121 +383,6 @@ export async function updateShop(id: number, input: ShopInput): Promise<LaundryS
     .single();
   if (error) throw error;
   return data as LaundryShop;
-}
-
-// --- Pickup routes (FR-022) --------------------------------------------------
-
-export async function listRoutes(agentId?: number, routeDate?: string): Promise<PickupRoute[]> {
-  const supabase = await supabaseServer();
-  let query = supabase.from("route_summary").select("*");
-  if (agentId) query = query.eq("agent_id", agentId);
-  if (routeDate) query = query.eq("route_date", routeDate);
-  const { data, error } = await query
-    .order("route_date", { ascending: false })
-    .order("id", { ascending: false });
-  if (error) throw error;
-  return (data ?? []) as PickupRoute[];
-}
-
-export async function getRoute(id: number): Promise<PickupRoute | undefined> {
-  const supabase = await supabaseServer();
-  const { data } = await supabase.from("route_summary").select("*").eq("id", id).maybeSingle();
-  return (data as PickupRoute | null) ?? undefined;
-}
-
-type RouteStopRow = {
-  id: number;
-  route_id: number;
-  order_id: number;
-  sequence: number;
-  status: string;
-  order: {
-    order_number: string;
-    bag_count: number;
-    status: string;
-    customer: { name: string } | null;
-    address: { address: string } | null;
-  } | null;
-};
-
-export async function getRouteOrders(routeId: number): Promise<RouteOrder[]> {
-  const supabase = await supabaseServer();
-  const { data, error } = await supabase
-    .from("route_orders")
-    .select(
-      `id, route_id, order_id, sequence, status,
-       order:laundry_orders!route_orders_order_id_fkey (
-         order_number, bag_count, status,
-         customer:users!laundry_orders_customer_id_fkey ( name ),
-         address:addresses!laundry_orders_pickup_address_id_fkey ( address )
-       )`,
-    )
-    .eq("route_id", routeId)
-    .order("sequence");
-  if (error) throw error;
-
-  return ((data ?? []) as unknown as RouteStopRow[]).map((row) => ({
-    id: row.id,
-    route_id: row.route_id,
-    order_id: row.order_id,
-    sequence: row.sequence,
-    status: row.status,
-    order_number: row.order?.order_number ?? "",
-    bag_count: row.order?.bag_count ?? 0,
-    order_status: (row.order?.status ?? "PENDING") as RouteOrder["order_status"],
-    customer_name: row.order?.customer?.name ?? "",
-    address_line: row.order?.address?.address ?? "",
-  })) as RouteOrder[];
-}
-
-/**
- * FR-022: groups pending orders into one route for an agent. The route and its
- * stops are written by create_route() so they land together; each order then
- * gets the agent assigned through the order service, which is what produces
- * the status history row and the notification.
- */
-export async function createRoute(
-  input: { name?: string | null; agentId: number; routeDate: string; orderIds: number[] },
-  assign: (orderId: number, agentId: number) => Promise<void>,
-): Promise<PickupRoute> {
-  const supabase = await supabaseServer();
-  const { data, error } = await supabase.rpc("create_route", {
-    p_agent_id: input.agentId,
-    p_route_date: input.routeDate,
-    p_order_ids: input.orderIds,
-    p_name: input.name || null,
-  });
-  if (error) {
-    if (error.message.includes("AGENT_UNAVAILABLE")) {
-      throw badRequest("No pickup agent is currently available.");
-    }
-    throw error;
-  }
-
-  // Sequential, because the selection order is the order the agent drives.
-  for (const orderId of input.orderIds) await assign(orderId, input.agentId);
-  return (await getRoute(Number(data)))!;
-}
-
-export async function updateRouteStatus(
-  id: number,
-  status: PickupRoute["status"],
-): Promise<PickupRoute> {
-  const supabase = await supabaseServer();
-  if (!(await getRoute(id))) throw notFound();
-  const { error } = await supabase
-    .from("pickup_routes")
-    .update({ status, updated_at: new Date().toISOString() })
-    .eq("id", id);
-  if (error) throw error;
-  return (await getRoute(id))!;
-}
-
-export async function deleteRoute(id: number): Promise<void> {
-  const supabase = await supabaseServer();
-  if (!(await getRoute(id))) throw notFound();
-  const { error } = await supabase.from("pickup_routes").delete().eq("id", id);
-  if (error) throw error;
 }
 
 // --- Settings ----------------------------------------------------------------

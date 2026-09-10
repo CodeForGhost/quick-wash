@@ -13,8 +13,8 @@ ever sent to it, and `public.users.auth_id` is the link. See "Why not email" at 
 Open the Supabase **SQL Editor** and run [`schema.sql`](./schema.sql). It is safe to
 re-run: it drops first. It creates
 
-- the ten tables of SRS section 10, plus three views the dashboards need
-  (`agent_workload`, `customer_summary`, `route_summary`) — PostgREST has no `GROUP BY`
+- the eight tables of SRS section 10, plus two views the dashboards need
+  (`agent_workload`, `customer_summary`) — PostgREST has no `GROUP BY`
   and no correlated subquery;
 - `handle_new_user` — makes a `users` row for every new signup, **always as a CUSTOMER**.
   Signup metadata is written by whoever calls `signUp()`, so it can never be allowed to
@@ -23,8 +23,8 @@ re-run: it drops first. It creates
   meaning "you may edit your own role";
 - the functions that do the writes which must land together, because PostgREST has no
   client-side transaction: `create_order`, `transition_order`, `set_order_price`,
-  `create_route`, `assign_agent`, `next_order_number`, `notify_users`;
-- row level security on all ten tables.
+  `assign_agent`, `next_order_number`, `notify_users`;
+- row level security on all eight tables.
 
 ## 2. Turn off email confirmation
 

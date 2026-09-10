@@ -134,31 +134,6 @@ export interface StatusHistoryEntry {
   created_at: string;
 }
 
-export interface PickupRoute {
-  id: number;
-  name: string | null;
-  agent_id: number;
-  agent_name: string;
-  route_date: string;
-  status: "PLANNED" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED";
-  order_count: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface RouteOrder {
-  id: number;
-  route_id: number;
-  order_id: number;
-  sequence: number;
-  status: string;
-  order_number: string;
-  customer_name: string;
-  bag_count: number;
-  address_line: string;
-  order_status: OrderStatus;
-}
-
 export interface Notification {
   id: number;
   user_id: number;

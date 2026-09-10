@@ -3,7 +3,7 @@ import { PipelineLoad } from "@/components/pipeline-rail";
 import { Card, DetailRow, Figure, PageTitle, SectionHeading } from "@/components/patterns";
 import { formatPrice } from "@/lib/format";
 import { listOrders, statusCounts } from "@/lib/orders";
-import { listCustomers, listRoutes } from "@/lib/repos";
+import { listCustomers } from "@/lib/repos";
 
 export const metadata = { title: "Reports · QuickWash" };
 
@@ -29,8 +29,10 @@ function hours(value: number | null): string {
 }
 
 /**
- * SRS section 23. The MVP is judged on three numbers above all: repeat order
- * rate, orders per pickup route, and contribution per order - so those lead.
+ * SRS section 23 names three headline numbers: repeat order rate, orders per
+ * pickup route, and contribution per order. Batched pickup has been removed,
+ * so the second is no longer measurable, and the third needs pickup and
+ * delivery costs the system does not record. What is left leads the screen.
  */
 export default async function AdminReportsPage() {
   await requireRole("ADMIN");
@@ -39,13 +41,9 @@ export default async function AdminReportsPage() {
   const delivered = orders.filter((order) => order.status === "DELIVERED");
   const cancelled = orders.filter((order) => order.status === "CANCELLED");
   const customers = await listCustomers();
-  const routes = await listRoutes();
 
   const repeatCustomers = customers.filter((customer) => customer.order_count > 1);
   const repeatRate = customers.length ? (repeatCustomers.length / customers.length) * 100 : 0;
-
-  const routeStops = routes.reduce((total, route) => total + route.order_count, 0);
-  const ordersPerRoute = routes.length ? routeStops / routes.length : 0;
 
   const revenue = delivered.reduce((total, order) => total + (order.price ?? 0), 0);
   const revenuePerOrder = delivered.length ? revenue / delivered.length : 0;
@@ -63,14 +61,13 @@ export default async function AdminReportsPage() {
       <PageTitle
         eyebrow="SRS section 23"
         title="Reports"
-        subtitle="The numbers that say whether batched pickup works in Puttalam."
+        subtitle="The numbers that say whether the service works in Puttalam."
       />
 
       <section className="mb-8">
-        <SectionHeading eyebrow="The three that matter" title="Headline metrics" />
-        <div className="grid gap-3 sm:grid-cols-3">
+        <SectionHeading eyebrow="What can be measured" title="Headline metrics" />
+        <div className="grid gap-3 sm:grid-cols-2">
           <Figure value={repeatRate.toFixed(0) + "%"} label="Repeat order rate" tone="lagoon" />
-          <Figure value={ordersPerRoute.toFixed(1)} label="Orders per pickup route" tone="lagoon" />
           <Figure value={formatPrice(revenuePerOrder)} label="Revenue per order" tone="lagoon" />
         </div>
       </section>
@@ -99,7 +96,6 @@ export default async function AdminReportsPage() {
             <DetailRow label="Processing at shop" value={hours(processingTime)} />
             <DetailRow label="Ready to delivered" value={hours(deliveryTime)} />
             <DetailRow label="End to end" value={hours(endToEnd)} />
-            <DetailRow label="Routes planned" value={routes.length} />
           </dl>
         </Card>
 
@@ -125,8 +121,9 @@ export default async function AdminReportsPage() {
       </div>
 
       <p className="mt-6 max-w-prose text-sm text-ink-soft">
-        Pickup and delivery cost per order are not tracked yet, so contribution margin cannot be calculated from
-        the system alone. Record the agent&apos;s cost per round against the routes above to close that gap.
+        Pickup and delivery cost per order are not tracked yet, so contribution margin - the third number SRS
+        section 23 asks for - cannot be calculated from the system alone. Recording what each collection and
+        drop-off costs would close that gap.
       </p>
     </>
   );

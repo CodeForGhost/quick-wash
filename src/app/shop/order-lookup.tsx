@@ -1,9 +1,9 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Card, Input, Notice } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 import type { OrderWithDetails } from "@/lib/types";
 
 /**
@@ -11,27 +11,21 @@ import type { OrderWithDetails } from "@/lib/types";
  * tag encodes the same string, so a scanner that types into this field works too.
  */
 export function OrderLookup() {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [code, setCode] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
     const trimmed = code.trim();
     if (!trimmed) return;
 
-    setBusy(true);
-    setError("");
-    try {
+    void run("lookup", async () => {
       const found = await api<{ order: OrderWithDetails }>(
         `/api/shop/orders/${encodeURIComponent(trimmed.toUpperCase())}`,
       );
-      router.push(`/shop/orders/${found.order.id}`);
-    } catch (cause) {
-      setError(messageFrom(cause));
-      setBusy(false);
-    }
+      // A scan should keep spinning until the order is actually on screen.
+      return { push: `/shop/orders/${found.order.id}` };
+    });
   }
 
   return (
@@ -47,7 +41,7 @@ export function OrderLookup() {
             autoComplete="off"
           />
         </label>
-        <Button type="submit" disabled={busy} className="sm:mt-6">
+        <Button type="submit" loading={busy} disabled={code.trim() === ""} className="sm:mt-6">
           {busy ? "Looking…" : "Open order"}
         </Button>
       </form>

@@ -1,7 +1,7 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import Link, { useLinkStatus } from "next/link";
+import { usePathname } from "next/navigation";
 import {
   Bike,
   ChartColumn,
@@ -12,7 +12,6 @@ import {
   MapPin,
   Package,
   PackageCheck,
-  Route,
   ScanLine,
   Settings,
   Store,
@@ -23,8 +22,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { SessionUser } from "@/lib/types";
+import { useAction } from "@/lib/use-action";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,7 +46,6 @@ const ICONS = {
   profile: User,
   pickups: Package,
   deliveries: Truck,
-  routes: Route,
   counter: ScanLine,
   washing: WashingMachine,
   ready: PackageCheck,
@@ -85,17 +85,18 @@ export function TopBar({
   unread: number;
 }) {
   const pathname = usePathname();
-  const router = useRouter();
+  const { run, busy } = useAction();
 
-  async function signOut() {
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.replace("/login");
-    router.refresh();
+  function signOut() {
+    void run("sign-out", async () => {
+      await fetch("/api/auth/logout", { method: "POST" });
+      return { replace: "/login", refresh: true };
+    });
   }
 
   return (
-    <header className="sticky top-0 z-30 border-b border-hairline bg-surface/95 backdrop-blur">
-      <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3">
+    <header className="sticky-bar sticky top-0 z-30 border-b border-hairline bg-surface/95 backdrop-blur">
+      <div className="gutter mx-auto flex max-w-6xl items-center gap-4 py-3">
         <Link href={items[0]?.href ?? "/"} className="flex items-center gap-2.5">
           <WashMark />
           <span className="font-display text-[17px] font-extrabold leading-none tracking-tighter text-ink">
@@ -170,12 +171,16 @@ export function TopBar({
               <DropdownMenuSeparator className="md:hidden" />
               <DropdownMenuItem
                 variant="destructive"
-                onSelect={() => {
-                  void signOut();
+                aria-busy={busy || undefined}
+                onSelect={(event) => {
+                  // Hold the menu open so the spinner is somewhere the person
+                  // can still see it while the session is being cleared.
+                  event.preventDefault();
+                  signOut();
                 }}
               >
-                <LogOut aria-hidden />
-                Sign out
+                {busy ? <Spinner aria-hidden /> : <LogOut aria-hidden />}
+                {busy ? "Signing out…" : "Sign out"}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -191,7 +196,7 @@ export function TabBar({ items }: { items: NavItem[] }) {
   return (
     <nav
       aria-label="Sections"
-      className="fixed inset-x-0 bottom-0 z-30 border-t border-hairline bg-surface/95 backdrop-blur md:hidden"
+      className="sticky-bar fixed inset-x-0 bottom-0 z-30 border-t border-hairline bg-surface/95 backdrop-blur md:hidden"
     >
       <ul className="mx-auto flex max-w-lg">
         {items.map((item) => {
@@ -214,7 +219,7 @@ export function TabBar({ items }: { items: NavItem[] }) {
                     active ? "bg-lagoon-soft" : "bg-transparent",
                   )}
                 >
-                  <Icon aria-hidden className="size-[18px]" strokeWidth={active ? 2.25 : 2} />
+                  <TabIcon icon={Icon} active={active} />
                 </span>
                 {item.short ?? item.label}
               </Link>
@@ -225,6 +230,19 @@ export function TabBar({ items }: { items: NavItem[] }) {
       <div style={{ height: "env(safe-area-inset-bottom)" }} />
     </nav>
   );
+}
+
+/**
+ * The tab's own icon, replaced by a spinner while the page behind that tab is
+ * being fetched. Swapping in place keeps the tab bar from moving, and answers
+ * the tap on the slow connections these rounds are worked on.
+ */
+function TabIcon({ icon: Icon, active }: { icon: LucideIcon; active: boolean }) {
+  const { pending } = useLinkStatus();
+  if (pending) {
+    return <Spinner className="size-[18px] text-lagoon" />;
+  }
+  return <Icon aria-hidden className="size-[18px]" strokeWidth={active ? 2.25 : 2} />;
 }
 
 /**

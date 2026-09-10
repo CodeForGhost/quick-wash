@@ -2,6 +2,7 @@ import Link from "next/link";
 import { formatDate, formatDateTime, formatPrice } from "@/lib/format";
 import type { OrderWithDetails } from "@/lib/types";
 import { Card, EmptyState, StatusPill, cx } from "./patterns";
+import { LinkSpinner } from "./pending";
 
 /**
  * A shop work queue. The shop works from the order number on the bag tag, so
@@ -40,7 +41,11 @@ export function ShopQueue({
               </span>
 
               <span className="shrink-0 text-right">
-                <StatusPill status={order.status} />
+                <span className="flex items-center justify-end gap-2">
+                  {/* Bag tags get tapped in a hurry: show the row is opening. */}
+                  <LinkSpinner className="size-3.5 text-lagoon" />
+                  <StatusPill status={order.status} />
+                </span>
                 {showPrice ? (
                   <span
                     className={cx(

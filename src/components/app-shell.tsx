@@ -15,7 +15,6 @@ export const NAV: Record<Role, NavItem[]> = {
   PICKUP_AGENT: [
     { href: "/agent", label: "Pickups", icon: "pickups" },
     { href: "/agent/deliveries", label: "Deliveries", short: "Drop-offs", icon: "deliveries" },
-    { href: "/agent/routes", label: "Routes", icon: "routes" },
     { href: "/agent/profile", label: "Profile", icon: "profile" },
   ],
   SHOP_STAFF: [
@@ -27,7 +26,6 @@ export const NAV: Record<Role, NavItem[]> = {
   ADMIN: [
     { href: "/admin", label: "Overview", icon: "overview" },
     { href: "/admin/orders", label: "Orders", icon: "orders" },
-    { href: "/admin/routes", label: "Routes", icon: "routes" },
     { href: "/admin/customers", label: "Customers", icon: "customers" },
     { href: "/admin/agents", label: "Agents", icon: "agents" },
     { href: "/admin/shops", label: "Shops", icon: "shops" },
@@ -56,9 +54,9 @@ export async function AppShell({
   const showTabs = TAB_BAR_ROLES.includes(role);
 
   return (
-    <div className="min-h-dvh">
+    <div className="min-h-svh">
       <TopBar user={user} items={items} unread={await unreadCount(user.id)} />
-      <main className={showTabs ? "mx-auto max-w-6xl px-4 py-6 pb-28 md:pb-10" : "mx-auto max-w-6xl px-4 py-6 pb-10"}>
+      <main className={showTabs ? "gutter mx-auto max-w-6xl py-6 pb-28 md:pb-10" : "gutter mx-auto max-w-6xl py-6 pb-10"}>
         {children}
       </main>
       {showTabs ? <TabBar items={items} /> : null}

@@ -143,14 +143,6 @@ const main = async () => {
   });
   check("a customer cannot set their own price", Boolean(priced), priced?.message?.slice(0, 60));
 
-  const { error: routed } = await ahmed.rpc("create_route", {
-    p_agent_id: 1,
-    p_route_date: new Date().toISOString().slice(0, 10),
-    p_order_ids: [myOrder],
-    p_name: "mine now",
-  });
-  check("a customer cannot plan a route", Boolean(routed), routed?.message?.slice(0, 60));
-
   console.log("\n--- Orders cannot be written around the functions ---");
   const { error: direct } = await ahmed
     .from("laundry_orders")

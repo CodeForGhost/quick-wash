@@ -2,6 +2,7 @@ import Link from "next/link";
 import { formatDate, formatPrice } from "@/lib/format";
 import type { OrderWithDetails } from "@/lib/types";
 import { StatusPill, cx } from "./patterns";
+import { LinkSpinner } from "./pending";
 
 /**
  * One order in a list. The order number is set in the mono face so a column of
@@ -34,7 +35,11 @@ export function OrderCard({
             {order.bag_count} {order.bag_count === 1 ? "bag" : "bags"}
           </p>
         </div>
-        <StatusPill status={order.status} />
+        <span className="flex shrink-0 items-center gap-2">
+          {/* A tapped card is silent until the detail page arrives; this fills that gap. */}
+          <LinkSpinner className="size-3.5 text-lagoon" />
+          <StatusPill status={order.status} />
+        </span>
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline pt-3 text-xs text-ink-soft">

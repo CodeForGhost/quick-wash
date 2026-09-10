@@ -1,30 +1,22 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button, Input, Notice } from "@/components/patterns";
-import { api, messageFrom } from "@/lib/client";
+import { api } from "@/lib/client";
+import { useAction } from "@/lib/use-action";
 
 /** Cancelling is only offered while the laundry has not been collected yet. */
 export function CancelOrder({ orderId }: { orderId: number }) {
-  const router = useRouter();
+  const { run, busy, error } = useAction();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
 
-  async function cancel() {
-    setBusy(true);
-    setError("");
-    try {
+  function cancel() {
+    void run("cancel", async () => {
       await api(`/api/orders/${orderId}/cancel`, { method: "POST", json: { reason } });
       setOpen(false);
-      router.refresh();
-    } catch (cause) {
-      setError(messageFrom(cause));
-    } finally {
-      setBusy(false);
-    }
+      return { refresh: true };
+    });
   }
 
   if (!open) {
@@ -52,7 +44,7 @@ export function CancelOrder({ orderId }: { orderId: number }) {
       />
       <Notice tone="error">{error}</Notice>
       <div className="flex gap-2">
-        <Button type="button" tone="danger" onClick={cancel} disabled={busy}>
+        <Button type="button" tone="danger" onClick={cancel} loading={busy}>
           {busy ? "Cancelling…" : "Yes, cancel it"}
         </Button>
         <Button type="button" tone="quiet" onClick={() => setOpen(false)} disabled={busy}>

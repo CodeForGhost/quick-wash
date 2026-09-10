@@ -18,7 +18,7 @@ export function AuthLayout({
   footer: ReactNode;
 }) {
   return (
-    <div className="grid min-h-dvh lg:grid-cols-[1.1fr_1fr]">
+    <div className="grid min-h-svh lg:grid-cols-[1.1fr_1fr]">
       <aside className="relative hidden flex-col justify-between overflow-hidden bg-ink px-10 py-12 text-white lg:flex">
         {/* Salt-pan grid: the rectangular evaporation pans north of Puttalam. */}
         <div

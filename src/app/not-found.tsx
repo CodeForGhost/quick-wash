@@ -3,7 +3,7 @@ import { WashMark } from "@/components/nav";
 
 export default function NotFound() {
   return (
-    <div className="flex min-h-dvh flex-col items-center justify-center px-4 text-center">
+    <div className="flex min-h-svh flex-col items-center justify-center px-4 text-center">
       <WashMark className="size-10" />
       <h1 className="mt-6 font-display text-3xl font-bold tracking-tighter text-ink">This page is not here</h1>
       <p className="mt-2 max-w-sm text-ink-soft">
