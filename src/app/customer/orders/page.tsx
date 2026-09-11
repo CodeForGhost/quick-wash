@@ -1,5 +1,6 @@
 import { requireRole } from "@/components/app-shell";
 import { LiveOrders } from "@/components/live-orders";
+import { NotifyOptIn } from "@/components/notify-opt-in";
 import { OrderCard } from "@/components/order-card";
 import { ButtonLink, EmptyState, PageTitle, SectionHeading } from "@/components/patterns";
 import { formatPrice } from "@/lib/format";
@@ -18,7 +19,7 @@ export default async function CustomerOrdersPage() {
 
   return (
     <>
-      <LiveOrders customerId={user.id} />
+      <LiveOrders customerId={user.id} orders={orders} />
       <PageTitle
         eyebrow="Your history"
         title="My orders"
@@ -28,6 +29,7 @@ export default async function CustomerOrdersPage() {
             : undefined
         }
       />
+      <NotifyOptIn />
 
       {orders.length > 0 ? (
         <div className="mb-6">

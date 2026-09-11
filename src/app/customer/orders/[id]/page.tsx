@@ -33,7 +33,7 @@ export default async function OrderTrackingPage({ params, searchParams }: Props)
 
   return (
     <>
-      <LiveOrders orderId={order.id} />
+      <LiveOrders orderId={order.id} orders={[order]} />
       <Link href="/customer/orders" className="mb-4 inline-block text-sm font-semibold text-lagoon">
         ← All orders
       </Link>

@@ -67,6 +67,9 @@ rows in `laundry_orders`, and re-renders the page from the server when one arriv
 security decides what the socket is sent, so no new authorisation exists for it. The one
 requirement is that `laundry_orders` is in the `supabase_realtime` publication; the block at the
 end of `supabase/schema.sql` (or the snippet of the same date) does that.
+With the customer's permission the same event also raises a browser notification naming the
+order and its new status - `src/components/notify-opt-in.tsx` asks once, from a click, and
+remembers "not now" on the device.
 
 ## How it is put together
 

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { requireRole } from "@/components/app-shell";
+import { LiveOrders } from "@/components/live-orders";
+import { NotifyOptIn } from "@/components/notify-opt-in";
 import { OrderCard } from "@/components/order-card";
 import { PipelineRail } from "@/components/pipeline-rail";
 import { ButtonLink, Card, EmptyState, PageTitle, SectionHeading, StatusPill } from "@/components/patterns";
@@ -23,6 +25,7 @@ export default async function CustomerHome() {
 
   return (
     <>
+      <LiveOrders customerId={user.id} orders={orders} />
       <PageTitle
         eyebrow={"Hello, " + user.name.split(" ")[0]}
         title={current ? "Your laundry is on its way" : "Ready when you are"}
@@ -32,6 +35,7 @@ export default async function CustomerHome() {
             : "Tell us when to come, and an agent will collect your bags from your door."
         }
       />
+      <NotifyOptIn />
 
       {addresses.length === 0 ? (
         <Card className="mb-6 border-sun/30 bg-sun-soft p-4">
