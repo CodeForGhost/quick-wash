@@ -19,6 +19,14 @@ const jetbrains = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "QuickWash",
   description: "Request a laundry pickup in Puttalam and follow it until it comes back clean.",
+  /*
+   * Installable (FR-018). On an iPhone, web push only exists once the site is
+   * on the Home Screen, and that needs a manifest and an apple-touch-icon;
+   * public/sw.js is the worker that shows what is pushed.
+   */
+  manifest: "/manifest.webmanifest",
+  appleWebApp: { capable: true, title: "QuickWash", statusBarStyle: "default" },
+  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
 };
 
 export const viewport: Viewport = {

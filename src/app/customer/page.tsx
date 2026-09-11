@@ -25,7 +25,7 @@ export default async function CustomerHome() {
 
   return (
     <>
-      <LiveOrders customerId={user.id} orders={orders} />
+      <LiveOrders customerId={user.id} />
       <PageTitle
         eyebrow={"Hello, " + user.name.split(" ")[0]}
         title={current ? "Your laundry is on its way" : "Ready when you are"}

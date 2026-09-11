@@ -67,9 +67,15 @@ rows in `laundry_orders`, and re-renders the page from the server when one arriv
 security decides what the socket is sent, so no new authorisation exists for it. The one
 requirement is that `laundry_orders` is in the `supabase_realtime` publication; the block at the
 end of `supabase/schema.sql` (or the snippet of the same date) does that.
-With the customer's permission the same event also raises a browser notification naming the
-order and its new status - `src/components/notify-opt-in.tsx` asks once, from a click, and
-remembers "not now" on the device.
+With the customer's permission the phone is told too, with the site closed, by Web Push:
+`src/components/notify-opt-in.tsx` asks once, from a click, registers `public/sw.js` and hands
+the browser's push subscription to `/api/push/subscribe`; `notify()` in `src/lib/notifications.ts`
+then sends the same title and body as the in-app notification through `src/lib/push.ts` whenever
+the customer is an audience. It needs the three `VAPID_*` values from `.env.example` (generate the
+pair once with `npx web-push generate-vapid-keys`; it is free) and the `push_subscriptions` table
+from the snippet of the same date. Without the keys the app runs as before and sends nothing.
+On an iPhone, push only exists once the site is on the Home Screen, so there the card explains
+how to add it; `public/manifest.webmanifest` is what makes that installable.
 
 ## How it is put together
 
@@ -77,6 +83,7 @@ remembers "not now" on the device.
 src/
   lib/
     supabase/        server.ts (cookie-bound), admin.ts (service role), browser.ts (Realtime), env.ts
+    push.ts          Web Push: keep a device's subscription, send to a user's devices
     auth.ts          who is signed in, and requireUser()
     types.ts         roles, the ten order statuses, domain records
     orders.ts        the state machine and business rules BR-001..BR-010

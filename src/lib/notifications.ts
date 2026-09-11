@@ -1,4 +1,5 @@
 import "server-only";
+import { pushToUsers } from "./push";
 import { supabaseServer } from "./supabase/server";
 import { EVENTS, type NotificationEvent } from "./notification-events";
 import type { LaundryOrder, Notification } from "./types";
@@ -15,20 +16,35 @@ export type { NotificationEvent } from "./notification-events";
  * the audiences name: a shop event used to cost a query here for the shop's
  * staff and then a second call to write the rows, and the ids were already
  * sitting next to the insert.
+ *
+ * When the customer is among the audiences the same title and body also go
+ * out as a Web Push (src/lib/push.ts), which is what reaches their phone
+ * with the site closed. It is sent after the rows are in and never throws,
+ * so a status change cannot fail because a phone was unreachable.
  */
 export async function notify(event: NotificationEvent, order: LaundryOrder): Promise<void> {
   const spec = EVENTS[event];
   if (!spec) return;
 
   const supabase = await supabaseServer();
+  const body = spec.body(order);
   const { error } = await supabase.rpc("notify_order", {
     p_order_id: order.id,
     p_audiences: spec.to,
     p_event: event,
     p_title: spec.title,
-    p_body: spec.body(order),
+    p_body: body,
   });
   if (error) throw error;
+
+  if (spec.to.includes("customer")) {
+    await pushToUsers([order.customer_id], {
+      title: spec.title,
+      body,
+      tag: `order-${order.id}`,
+      url: `/customer/orders/${order.id}`,
+    });
+  }
 }
 
 export async function listNotifications(userId: number, limit = 30): Promise<Notification[]> {

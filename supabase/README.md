@@ -107,7 +107,9 @@ npx supabase start -x studio,postgres-meta,imgproxy,edge-runtime,logflare,vector
 ```
 
 `realtime` stays on: the customer's order pages subscribe to it for live status (see the
-Realtime block at the end of `schema.sql`).
+Realtime block at the end of `schema.sql`). Web Push (the `push_subscriptions` table, also at
+the end of `schema.sql`) works locally too, once `VAPID_*` is set in `.env.local` - the push
+services do not care where the app runs.
 
 It prints an API URL, an anon key and a service role key — put those three in
 `.env.local`. Then apply the schema and seed:

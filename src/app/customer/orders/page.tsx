@@ -19,7 +19,7 @@ export default async function CustomerOrdersPage() {
 
   return (
     <>
-      <LiveOrders customerId={user.id} orders={orders} />
+      <LiveOrders customerId={user.id} />
       <PageTitle
         eyebrow="Your history"
         title="My orders"

@@ -114,3 +114,16 @@ export const statusFilterSchema = z.enum(ORDER_STATUSES);
 export function firstIssue(error: z.ZodError): string {
   return error.issues[0]?.message ?? "Please check the information you entered.";
 }
+
+/** FR-018: what PushSubscription.toJSON() hands us. */
+export const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url("That subscription is not valid."),
+  keys: z.object({
+    p256dh: z.string().min(1),
+    auth: z.string().min(1),
+  }),
+});
+
+export const pushUnsubscribeSchema = z.object({
+  endpoint: z.string().url("That subscription is not valid."),
+});
