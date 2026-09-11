@@ -45,9 +45,12 @@ export function ProcessingControls({
 
   const next = NEXT[status];
   const stage = SHOP_STATUSES.indexOf(status as (typeof SHOP_STATUSES)[number]);
+  // FR-014 before FR-015: READY tells the customer what they owe, so the
+  // price has to be on the order first. transition_order() refuses it too.
+  const needsPrice = next === "READY" && price === null;
 
   function advance() {
-    if (!next) return;
+    if (!next || needsPrice) return;
     setSaved("");
     void run("advance", async () => {
       await api(`/api/shop/orders/${orderId}/status`, { method: "PATCH", json: { status: next } });
@@ -98,16 +101,25 @@ export function ProcessingControls({
         </ol>
 
         {next ? (
-          <Button
-            type="button"
-            tone="accent"
-            onClick={advance}
-            loading={isBusy("advance")}
-            disabled={busy}
-            className="w-full"
-          >
-            {isBusy("advance") ? "Updating…" : ACTION_LABEL[next]}
-          </Button>
+          <>
+            <Button
+              type="button"
+              tone="accent"
+              onClick={advance}
+              loading={isBusy("advance")}
+              disabled={busy || needsPrice}
+              aria-describedby={needsPrice ? "needs-price" : undefined}
+              className="w-full"
+            >
+              {isBusy("advance") ? "Updating…" : ACTION_LABEL[next]}
+            </Button>
+            {needsPrice ? (
+              <p id="needs-price" className="mt-3 text-sm text-ink-soft">
+                Set the final price below first. Marking the order ready tells the customer
+                what they owe.
+              </p>
+            ) : null}
+          </>
         ) : status === "READY" ? (
           <p className="rounded-xl bg-lagoon-soft px-4 py-3 text-sm font-medium text-lagoon-deep">
             Ready to go. An administrator will assign a delivery agent.

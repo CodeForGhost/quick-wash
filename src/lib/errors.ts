@@ -15,6 +15,7 @@ export const ERRORS = {
   agentUnavailable: "No pickup agent is currently available.",
   unauthorized: "You do not have permission to perform this action.",
   invalidTransition: "This order cannot be moved to the selected status.",
+  priceRequired: "Set the final price before marking this order ready.",
   notFound: "The requested record could not be found.",
   notAuthenticated: "Please sign in to continue.",
 } as const;

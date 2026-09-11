@@ -71,6 +71,7 @@ function fromRpc(message: string): Error {
   if (message.includes("BAD_ADDRESS")) return badRequest(ERRORS.invalidAddress);
   if (message.includes("BAD_BAG_COUNT")) return badRequest("Please enter at least one laundry bag.");
   if (message.includes("BAD_PRICE")) return badRequest("Please enter a valid price.");
+  if (message.includes("PRICE_REQUIRED")) return conflict(ERRORS.priceRequired);
   if (message.includes("AGENT_UNAVAILABLE")) return badRequest(ERRORS.agentUnavailable);
   if (message.includes("BAD_STAGE_PICKUP")) {
     return conflict("This order is already past the pickup stage.");

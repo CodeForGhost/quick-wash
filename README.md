@@ -90,7 +90,7 @@ src/
     app-shell.tsx  role guard and chrome; nav.tsx, order-card.tsx, pipeline-rail.tsx
 scripts/
   seed.ts            seeds orders sitting at every stage of the pipeline
-  acceptance.mjs     47 checks through the app, over real HTTP
+  acceptance.mjs     48 checks through the app, over real HTTP
   rls.mjs            21 checks around it, straight at PostgREST
 supabase/
   schema.sql         tables, views, policies and the functions that write
@@ -107,6 +107,9 @@ supabase/
   `PENDING`, so the customer's trail is complete.
 - **BR-003/BR-004/BR-005/BR-010** - the role making the change must be permitted to reach that
   status, and an agent may only touch orders assigned to them.
+- **FR-014 before FR-015** - an order cannot be marked `READY` until the shop has set its price,
+  because READY is the notification that tells the customer what they owe. The shop screen
+  disables the button; `transition_order()` refuses the move.
 - **BR-002** - order numbers (`PU-2026-0001`) come from a per-year counter incremented in a
   single `INSERT ... ON CONFLICT DO UPDATE ... RETURNING` inside the same transaction as the
   insert, so two simultaneous requests cannot take the same number.
@@ -177,7 +180,7 @@ Two suites, checking different things. Both run against the built app.
 
 ```bash
 npm run build && npx next start -p 3021 &
-npm run test:acceptance -- http://localhost:3021   # 47 checks, through the app
+npm run test:acceptance -- http://localhost:3021   # 48 checks, through the app
 npm run test:rls                                   # 21 checks, around it
 ```
 
@@ -185,7 +188,8 @@ npm run test:rls                                   # 21 checks, around it
 admin assigns -> agent collects -> shop receives, washes, dries, irons, prices, marks ready ->
 admin assigns delivery -> agent delivers -> customer sees the completed order. Plus the negative
 access checks, five concurrent order requests taking five distinct numbers, case-insensitive
-search, a price of `1234.56` surviving as a number, and status history. **47/47.**
+search, a price of `1234.56` surviving as a number, a shop refused `READY` until it has priced
+the order, and status history. **48/48.**
 
 **`test:rls`** talks straight to PostgREST with the anon key - the same key that ships to the
 browser - as a signed-in customer, with the app taken out of the way. It tries what someone with

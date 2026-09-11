@@ -463,6 +463,10 @@ begin
   if o.status = p_to then return public.order_details(p_order_id); end if;
   if not public.allowed_transition(o.status, p_to) then raise exception 'BAD_TRANSITION'; end if;
 
+  -- FR-014 before FR-015: READY tells the customer what they owe, so the
+  -- shop must have priced the order before it can say so.
+  if p_to = 'READY' and o.price is null then raise exception 'PRICE_REQUIRED'; end if;
+
   stamp := case p_to
              when 'PICKED_UP' then 'picked_up_at'
              when 'AT_LAUNDRY' then 'received_at'
