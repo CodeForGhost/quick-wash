@@ -84,10 +84,6 @@ export function LoginForm() {
 
       <div className="mt-8 rounded-card border border-dashed border-hairline p-4">
         <p className="eyebrow">Demo accounts</p>
-        <p className="mt-1.5 text-xs text-ink-soft">
-          Seeded by <span className="tabular">npm run db:seed</span>. Every one uses the password{" "}
-          <span className="tabular">password123</span>.
-        </p>
         <div className="mt-3 flex flex-wrap gap-2">
           {DEMO.map((account) => (
             <button
