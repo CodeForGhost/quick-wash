@@ -103,8 +103,11 @@ Sign in at `/login` with `0770000001` / `password123`, or use the one-tap demo b
 The whole stack runs on your machine, which is how this was built and tested:
 
 ```bash
-npx supabase start -x studio,postgres-meta,imgproxy,edge-runtime,logflare,vector,realtime,storage-api,mailpit,supavisor
+npx supabase start -x studio,postgres-meta,imgproxy,edge-runtime,logflare,vector,storage-api,mailpit,supavisor
 ```
+
+`realtime` stays on: the customer's order pages subscribe to it for live status (see the
+Realtime block at the end of `schema.sql`).
 
 It prints an API URL, an anon key and a service role key — put those three in
 `.env.local`. Then apply the schema and seed:

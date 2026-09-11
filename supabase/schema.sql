@@ -823,3 +823,24 @@ create policy "admins edit settings" on settings
 -- order_counters has no policy at all: it is reached only through
 -- next_order_number(), which is security definer. RLS on with no policy means
 -- no direct access, which is exactly right.
+
+
+-- ============================================================================
+-- Realtime
+-- ============================================================================
+-- FR-018: a customer's order pages listen for changes over Supabase Realtime
+-- (a WebSocket) and re-render when one arrives (src/components/live-orders.tsx).
+-- Postgres streams row changes for the tables in this publication; the
+-- "orders follow BR-008" select policy above decides who is sent each one, so
+-- a customer only ever hears about their own orders. Guarded because the
+-- publication survives the drop at the top of this file.
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+     where pubname = 'supabase_realtime'
+       and schemaname = 'public' and tablename = 'laundry_orders'
+  ) then
+    alter publication supabase_realtime add table public.laundry_orders;
+  end if;
+end $$;

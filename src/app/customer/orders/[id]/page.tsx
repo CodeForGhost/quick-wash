@@ -6,6 +6,7 @@ import { PipelineRail } from "@/components/pipeline-rail";
 import { Card, DetailRow, SectionHeading, StatusPill } from "@/components/patterns";
 import { formatDate, formatDateTime, formatPrice } from "@/lib/format";
 import { canTransition, getOrder, getStatusHistory } from "@/lib/orders";
+import { LiveOrders } from "@/components/live-orders";
 import { CancelOrder } from "./cancel-order";
 
 export const metadata = { title: "Track your order · QuickWash" };
@@ -32,6 +33,7 @@ export default async function OrderTrackingPage({ params, searchParams }: Props)
 
   return (
     <>
+      <LiveOrders orderId={order.id} />
       <Link href="/customer/orders" className="mb-4 inline-block text-sm font-semibold text-lagoon">
         ← All orders
       </Link>

@@ -1,4 +1,5 @@
 import { requireRole } from "@/components/app-shell";
+import { LiveOrders } from "@/components/live-orders";
 import { OrderCard } from "@/components/order-card";
 import { ButtonLink, EmptyState, PageTitle, SectionHeading } from "@/components/patterns";
 import { formatPrice } from "@/lib/format";
@@ -17,6 +18,7 @@ export default async function CustomerOrdersPage() {
 
   return (
     <>
+      <LiveOrders customerId={user.id} />
       <PageTitle
         eyebrow="Your history"
         title="My orders"

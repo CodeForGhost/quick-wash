@@ -61,12 +61,19 @@ it; `phoneToAuthEmail` in `src/lib/supabase/env.ts` is the whole of the mapping.
 Notifications are stored in-app; the SRS allows WhatsApp or SMS to be added later, and
 `src/lib/notifications.ts` is the single place to do it.
 
+A customer's order pages update live (FR-018). `src/components/live-orders.tsx` subscribes over
+Supabase Realtime - a WebSocket the project already provides - to changes on the customer's own
+rows in `laundry_orders`, and re-renders the page from the server when one arrives. Row level
+security decides what the socket is sent, so no new authorisation exists for it. The one
+requirement is that `laundry_orders` is in the `supabase_realtime` publication; the block at the
+end of `supabase/schema.sql` (or the snippet of the same date) does that.
+
 ## How it is put together
 
 ```
 src/
   lib/
-    supabase/        server.ts (cookie-bound), admin.ts (service role), env.ts
+    supabase/        server.ts (cookie-bound), admin.ts (service role), browser.ts (Realtime), env.ts
     auth.ts          who is signed in, and requireUser()
     types.ts         roles, the ten order statuses, domain records
     orders.ts        the state machine and business rules BR-001..BR-010
